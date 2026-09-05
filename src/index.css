@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-fintech-bg: #FDFDFD;
+  --color-fintech-surface: #FFFFFF;
+  --color-fintech-surface-muted: #F8F9FA;
+  --color-fintech-border: #EAEAEA;
+  --color-fintech-accent: #0052FF;
+  --color-fintech-success: #059669;
+  --color-fintech-warn: #D97706;
+  --color-fintech-text: #1C1C1C;
+  --color-fintech-muted: #6B7280;
+}
+
+@layer base {
+  body {
+    @apply bg-[var(--color-fintech-bg)] text-[var(--color-fintech-text)] antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply tracking-tight font-semibold text-[var(--color-fintech-text)];
+  }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400;
+  }
+}
+
+.font-mono-numbers {
+  font-family: 'SF Mono', Consolas, 'Roboto Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* AI Pipeline Animations */
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+.ai-pulse-active {
+  position: relative;
+}
+.ai-pulse-active::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-fintech-accent);
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  z-index: -1;
+}
+
+.data-table th {
+  @apply text-left text-xs font-semibold text-gray-500 uppercase tracking-wider py-3 px-4 border-b border-gray-100;
+}
+.data-table td {
+  @apply py-3 px-4 border-b border-gray-50 text-sm align-middle text-gray-700;
+}
+.data-table tr:hover td {
+  @apply bg-gray-50/50;
+}
+
+.fintech-panel {
+  @apply bg-white border border-[#EAEAEA] rounded-xl shadow-sm;
+}

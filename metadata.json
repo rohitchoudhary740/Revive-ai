@@ -1,0 +1,6 @@
+{
+  "name": "ReviveAI",
+  "description": "AI Revenue Recovery dashboard for Razorpay Buildathon",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
