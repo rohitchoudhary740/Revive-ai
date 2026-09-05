@@ -38,9 +38,11 @@ Payment Verification
 Audit Trail
       ↓
 Measured Recovered Revenue
+
+
 Why ReviveAI?
 
-Traditional recovery workflows often look like:
+#Traditional recovery workflows often look like:
 
 Payment Failure
       ↓
@@ -51,6 +53,8 @@ Operations Team
 Manual Investigation
       ↓
 Manual Recovery
+
+
 
 ReviveAI turns this into a governed agentic workflow:
 
@@ -71,6 +75,8 @@ ReviveAI Agent
 Governance & Recovery Execution
 Verification, Persistence & Measurement
 Architecture principle
+
+
                  ┌─────────────────────────┐
                  │       GEMINI AI         │
                  │   Probabilistic Layer   │
@@ -121,6 +127,7 @@ Agent Mode	Auto Recover
 Example: ₹5,000
 Amount = ₹5,000
 Recovery probability = above threshold
+
 Auto-recovery limit = ₹25,000
 
              ↓
@@ -130,8 +137,10 @@ Auto-recovery limit = ₹25,000
              ↓
 
         AUTO RECOVER
+
 Example: ₹48,500
 Amount = ₹48,500
+
 Auto-recovery limit = ₹25,000
 
              ↓
@@ -236,29 +245,29 @@ The important distinction is:
 
 ReviveAI does not treat an AI prediction as recovered revenue. Recovery is measured after payment verification.
 
-Revenue Leak Scenarios
+#Revenue Leak Scenarios
 
 ReviveAI's recovery pipeline supports multiple revenue-risk scenarios:
 
-Payment Failure
+#Payment Failure
 
 A declined payment becomes a recovery opportunity.
 
-Checkout Abandonment
+#Checkout Abandonment
 
 A customer reaches checkout but does not complete payment.
 
-Subscription Halt
+#Subscription Halt
 
 A failed renewal places recurring revenue at risk.
 
-Overdue Receivable
+#Overdue Receivable
 
 A receivable remains unpaid beyond its expected payment period.
 
 The additional scenarios are currently represented through controlled demo inputs rather than being presented as production live integrations.
 
-Recovery Sweep
+#Recovery Sweep
 
 ReviveAI measures recovery outcomes across recovery cases.
 
@@ -275,7 +284,7 @@ Recovery Outcomes
 
 The primary business outcome is:
 
-How much revenue was actually recovered?
+How much revenue was actually recovered???
 
 Audit Trail
 
@@ -303,8 +312,12 @@ Which policy applied?
 Was human approval required?
 What action was taken?
 Was the payment actually recovered?
+
+
 Technology Stack
+
 Layer	Technology
+
 Frontend	React + Vite
 Backend	Node.js + Express
 Language	TypeScript
@@ -313,7 +326,8 @@ Database	SQLite
 Payment Infrastructure	Razorpay
 Payment Environment	Razorpay Test Mode
 Payment Verification	Razorpay Webhooks
-Project Structure
+
+#Project Structure
 reviveai/
 │
 ├── src/
@@ -466,20 +480,3 @@ AI insights. Merchant control. Real recovery outcomes.
 
 Built for Razorpay AI Buildathon 2026 — Track 03: AI Revenue Recovery.
 
-
-### Critical: why this version will look better on GitHub
-
-Your previous README had the Mermaid block effectively rendered as ordinary text. **Do not remove the three backticks around the Mermaid architecture.**
-
-It must literally begin like this in GitHub:
-
-````markdown
-```mermaid
-flowchart TB
-...
-
-GitHub will render that as a **proper architecture diagram**, not the ugly text/arrow output in your screenshots.
-
-Also, **delete the old 521-line README completely and replace it**. Don't append this underneath the existing content.
-
-One more thing: your screenshots show the GitHub repo is already public. Before the final submissio
