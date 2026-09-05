@@ -1,253 +1,193 @@
 # ReviveAI
 
-### Governed Autonomous Revenue Recovery Agent
+## Governed Autonomous Revenue Recovery Agent
 
-> **Detect revenue at risk. Reason over the failure. Act within merchant-defined guardrails. Verify the outcome. Recover more revenue.**
+> **Detect revenue at risk. Diagnose the cause. Act within merchant-defined guardrails. Verify recovery. Measure the money recovered.**
 
-**Built for Razorpay AI Buildathon 2026 — Track 03: AI Revenue Recovery**
-
----
-
-## The Problem
-
-Payment failure is only the beginning of revenue leakage.
-
-When a payment fails, a merchant still needs to answer:
-
-- Why did it fail?
-- Is it actually recoverable?
-- What should happen next?
-- Is the agent allowed to take that action?
-- Should a human approve it?
-- Did the recovery actually bring the money back?
-
-Traditional recovery workflows often stop at detection or alerts.
-
-**ReviveAI turns that workflow into an agentic recovery loop.**
+**Razorpay AI Buildathon 2026 · Track 03 — AI Revenue Recovery**
 
 ---
 
-# What is ReviveAI?
+## Overview
 
-ReviveAI is a **governed autonomous revenue recovery agent** designed to operate on top of payment workflows.
+Revenue leakage does not end when a payment fails.
 
-It continuously moves a recovery opportunity through:
+A failed payment can become lost revenue, customer churn, manual recovery work, or an unresolved receivable. The challenge is not only identifying the problem — it is deciding **what action should be taken, whether the merchant allows the agent to take it, and whether the recovery actually succeeded.**
 
+**ReviveAI** is a governed autonomous revenue-recovery agent designed to close this loop.
 
-DETECT
-   ↓
-DIAGNOSE
-   ↓
-DECIDE
-   ↓
-GOVERN
-   ↓
-ACT / ESCALATE / STOP
-   ↓
-VERIFY
-   ↓
-AUDIT
-   ↓
-MEASURE
+It combines Gemini-powered diagnosis with deterministic merchant guardrails and Razorpay payment infrastructure.
 
-The core principle is:
-
-AI reasons about the recovery opportunity. Merchant-defined policy decides what the agent is allowed to do.
-
-This keeps autonomy bounded by explicit business rules.
-
+```text
+Revenue at Risk
+      ↓
+AI Diagnosis
+      ↓
+Recovery Decision
+      ↓
+Merchant Guardrails
+      ↓
+┌──────────────┬───────────────┬─────────────┐
+│ Auto Recover │ Human Review  │    Stop     │
+└──────────────┴───────────────┴─────────────┘
+      ↓
+Recovery Execution
+      ↓
+Payment Verification
+      ↓
+Audit Trail
+      ↓
+Measured Recovered Revenue
 Why ReviveAI?
 
-Razorpay's Agent Studio vision is moving payment operations from dashboards and manual workflows toward agents that can observe, reason and execute while remaining within merchant-defined boundaries.
+Traditional recovery workflows often look like:
 
-ReviveAI follows this direction with a specific focus:
+Payment Failure
+      ↓
+Alert
+      ↓
+Operations Team
+      ↓
+Manual Investigation
+      ↓
+Manual Recovery
 
-Revenue Recovery
+ReviveAI turns this into a governed agentic workflow:
 
-Instead of only telling a merchant:
+Observe → Reason → Govern → Act → Verify → Audit → Measure
 
-"₹5,000 payment failed."
+The key principle is:
 
-ReviveAI answers:
+Gemini reasons about the recovery opportunity. The deterministic policy engine decides whether the agent is authorized to act.
 
-"This payment is recoverable, here is why, here is the expected recovery, this is what I am permitted to do, and here is whether the money was actually recovered."
+This enables autonomy without giving an LLM unrestricted control over merchant revenue.
 
-Core Agent Loop
-                    ┌──────────────────────┐
-                    │   REVENUE SIGNAL     │
-                    │ Payment / Recovery   │
-                    │ Opportunity          │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  1. DETECT           │
-                    │  Revenue at Risk     │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  2. DIAGNOSE         │
-                    │  Gemini AI            │
-                    │                      │
-                    │ Root Cause            │
-                    │ Confidence            │
-                    │ Recovery Probability │
-                    │ Recommended Action    │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  3. DECIDE           │
-                    │  Recovery Strategy   │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-              ┌──────────────────────────────────┐
-              │     4. MERCHANT GUARDRAILS       │
-              │                                  │
-              │ Maximum Auto-Recovery Amount     │
-              │ Minimum Recovery Probability    │
-              │ Maximum Automated Retries        │
-              │ High-Value Approval              │
-              │ Low-Confidence Stop              │
-              │ Agent Mode                       │
-              └────────────────┬─────────────────┘
-                               │
-                 ┌─────────────┼─────────────┐
-                 │             │             │
-                 ▼             ▼             ▼
-        ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-        │ AUTO RECOVER │ │ HUMAN REVIEW │ │    STOP      │
-        │              │ │              │ │              │
-        │ Agent acts   │ │ Merchant     │ │ No action    │
-        │ automatically│ │ decides      │ │ when unsafe  │
-        └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-               │                │                │
-               │                ▼                │
-               │        ┌──────────────┐         │
-               │        │   APPROVED   │         │
-               │        └──────┬───────┘         │
-               │               │                 │
-               └───────────────┴─────────────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  5. RECOVERY ACTION  │
-                    │ Razorpay Test Mode   │
-                    │ Payment Link         │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  6. VERIFY           │
-                    │ Razorpay Webhook     │
-                    │ Payment Verification │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  7. AUDIT            │
-                    │ Decision + Action    │
-                    │ + Outcome            │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  8. MEASURE          │
-                    │ Recovered Revenue    │
-                    │ Recovery Rate        │
-                    │ Recovery Outcomes    │
-                    └──────────────────────┘
-Architecture
-The Governance Layer
+System Architecture
 
-ReviveAI does not give an LLM unrestricted control over merchant revenue.
+The architecture is intentionally separated into four major layers:
 
-The merchant defines the operating boundaries.
+Revenue Signals
+ReviveAI Agent
+Governance & Recovery Execution
+Verification, Persistence & Measurement
+Architecture principle
+                 ┌─────────────────────────┐
+                 │       GEMINI AI         │
+                 │   Probabilistic Layer   │
+                 │                         │
+                 │ Diagnose + Reason       │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │     POLICY ENGINE       │
+                 │   Deterministic Layer   │
+                 │                         │
+                 │ Merchant Authority      │
+                 └────────────┬────────────┘
+                              │
+                  ┌───────────┼───────────┐
+                  ▼           ▼           ▼
+                AUTO        REVIEW       STOP
 
-Example
-Guardrail	Demo Configuration
+AI proposes. Policy authorizes. The system executes only within the merchant's boundaries.
+
+The Governed Agent Loop
+
+ReviveAI follows an eight-stage recovery loop:
+
+Stage	What happens
+1. Detect	Identify revenue at risk
+2. Diagnose	Gemini determines root cause and recovery probability
+3. Decide	Generate a recovery recommendation
+4. Govern	Apply merchant-defined policies
+5. Act	Auto-recover, request approval, or stop
+6. Verify	Confirm payment through Razorpay
+7. Audit	Record decisions and actions
+8. Measure	Calculate actual recovered revenue
+Merchant Guardrails
+
+ReviveAI is designed around merchant-controlled autonomy.
+
+Example configuration:
+
+Guardrail	Demo Value
 Maximum Auto-Recovery Amount	₹25,000
 Minimum Recovery Probability	30%
 Maximum Automated Retries	3
 High-Value Recovery	Human Approval
 Low-Confidence Recovery	Stop
 Agent Mode	Auto Recover
-Example: Automatic Recovery
-Payment Amount: ₹5,000
-Recovery Probability: Above threshold
-Auto-Recovery Limit: ₹25,000
+Example: ₹5,000
+Amount = ₹5,000
+Recovery probability = above threshold
+Auto-recovery limit = ₹25,000
 
              ↓
 
-Merchant Policy Allows Action
+     POLICY ALLOWS ACTION
 
              ↓
 
-AUTO RECOVER
-Example: Human Escalation
-Payment Amount: ₹48,500
-Auto-Recovery Limit: ₹25,000
+        AUTO RECOVER
+Example: ₹48,500
+Amount = ₹48,500
+Auto-recovery limit = ₹25,000
 
              ↓
 
-High-Value Recovery
+       HIGH-VALUE CASE
 
              ↓
 
-HUMAN APPROVAL REQUIRED
+     HUMAN APPROVAL REQUIRED
 
-The important design principle:
-
-The agent can be autonomous without being uncontrolled.
+The merchant can therefore choose how much autonomy the agent receives.
 
 Agent Modes
 Auto Recover
 
-The agent can execute eligible recovery actions automatically when all configured guardrails are satisfied.
+Eligible cases are executed automatically when all merchant guardrails are satisfied.
 
 Review First
 
-The agent performs the diagnosis and prepares the recovery decision, but pauses for merchant approval before execution.
+The agent diagnoses and prepares the recovery decision, but waits for merchant approval before execution.
 
 Manual Only
 
-The agent identifies and diagnoses the recovery opportunity, while execution remains human-controlled.
+The agent can identify and diagnose opportunities while recovery execution remains human-controlled.
 
-AI Decision Layer
+AI Diagnosis
 
 Gemini provides structured recovery intelligence:
 
-Root Cause
+Root cause
 Confidence
-Recovery Probability
-Recommended Action
-Expected Recovery
+Recovery probability
+Recommended action
+Expected recovery
 Reasoning
 Evidence
 
-The AI does not directly decide whether it has authority to execute.
+The AI diagnosis is then passed to the deterministic policy engine.
 
-Instead:
-
+Payment Event
+     ↓
 Gemini
-  ↓
-Diagnosis
-  ↓
-Deterministic Policy Engine
-  ↓
+     ↓
+Structured Diagnosis
+     ↓
+Policy Engine
+     ↓
 Merchant Authorization
-  ↓
+     ↓
 Action
 
-This creates a clear separation between:
-
-probabilistic reasoning and deterministic execution authority.
+This separation reduces the risk of allowing probabilistic model output to directly control sensitive financial actions.
 
 Recovery Lifecycle
 
-Every recovery case follows a controlled lifecycle:
+Each recovery case moves through a controlled state machine:
 
 NEW
  ↓
@@ -255,70 +195,72 @@ DIAGNOSING
  ↓
 SAFETY CHECKING
  ↓
- ├── STOPPED
+ ├──────────────→ STOPPED
  │
- ├── HUMAN REVIEW
- │       ↓
- │   AUTHORIZED
+ ├──────────────→ HUMAN REVIEW
+ │                       ↓
+ │                   AUTHORIZED
  │
- └── AUTHORIZED
+ └──────────────→ AUTHORIZED
+                        ↓
+                       SENT
+                        ↓
+                    RECOVERED
+
+A case is considered recovered only after the payment outcome is verified.
+
+Verified Recovery
+
+The prototype demonstrates an end-to-end Razorpay Test Mode recovery.
+
+₹5,000 demonstration
+Failed ₹5,000 Payment
         ↓
-       SENT
-        ↓
-     RECOVERED
-
-A case is counted as recovered only after the payment outcome is verified.
-
-Verified Revenue Recovery
-
-The prototype demonstrates the complete recovery loop using Razorpay Test Mode.
-
-Demonstrated ₹5,000 flow
-Failed Payment
-      ↓
 Gemini Diagnosis
-      ↓
+        ↓
 Merchant Guardrail Check
-      ↓
+        ↓
 Recovery Authorized
-      ↓
+        ↓
 Razorpay Test Mode Payment Link
-      ↓
+        ↓
 Payment Completed
-      ↓
+        ↓
 Razorpay Webhook
-      ↓
+        ↓
 Payment Verified
-      ↓
+        ↓
 ₹5,000 RECOVERED
 
-This closes the loop from revenue at risk → verified recovery.
+The important distinction is:
 
-Revenue Leak Coverage
+ReviveAI does not treat an AI prediction as recovered revenue. Recovery is measured after payment verification.
 
-ReviveAI's recovery pipeline can represent multiple revenue-leak scenarios:
+Revenue Leak Scenarios
+
+ReviveAI's recovery pipeline supports multiple revenue-risk scenarios:
 
 Payment Failure
 
-A payment is declined and becomes a recovery opportunity.
+A declined payment becomes a recovery opportunity.
 
 Checkout Abandonment
 
-A customer reaches checkout but does not complete the payment.
+A customer reaches checkout but does not complete payment.
 
 Subscription Halt
 
-A recurring payment fails and puts subscription revenue at risk.
+A failed renewal places recurring revenue at risk.
 
 Overdue Receivable
 
 A receivable remains unpaid beyond its expected payment period.
 
-These additional scenarios are currently demonstrated through controlled demo inputs rather than being presented as production live integrations.
+The additional scenarios are currently represented through controlled demo inputs rather than being presented as production live integrations.
 
 Recovery Sweep
 
-ReviveAI measures recovery outcomes across a batch.
+ReviveAI measures recovery outcomes across recovery cases.
 
 The dashboard tracks:
 
@@ -327,45 +269,39 @@ Expected Recovery
 Recovered Revenue
 Recovery Rate
 Cases Recovered
-Human Review Cases
+Human Review
 Stopped Cases
 Recovery Outcomes
 
-The key metric is not:
+The primary business outcome is:
 
-"How many AI decisions were made?"
+How much revenue was actually recovered?
 
-It is:
+Audit Trail
 
-"How much revenue was actually recovered?"
-
-Auditability
-
-Every important recovery decision produces an operational record.
-
-The audit trail captures the recovery journey:
+Every important recovery event is recorded.
 
 Case Created
-      ↓
+     ↓
 AI Diagnosis
-      ↓
+     ↓
 Policy Decision
-      ↓
+     ↓
 Authorization / Review
-      ↓
+     ↓
 Recovery Action
-      ↓
+     ↓
 Payment Verification
-      ↓
+     ↓
 Recovery Outcome
 
-This allows the merchant to understand:
+The audit trail provides visibility into:
 
 What happened?
-Why did the agent decide this?
-Which policy was applied?
+Why did the agent make the decision?
+Which policy applied?
 Was human approval required?
-What action was executed?
+What action was taken?
 Was the payment actually recovered?
 Technology Stack
 Layer	Technology
@@ -376,7 +312,7 @@ AI	Google Gemini
 Database	SQLite
 Payment Infrastructure	Razorpay
 Payment Environment	Razorpay Test Mode
-Verification	Razorpay Webhooks
+Payment Verification	Razorpay Webhooks
 Project Structure
 reviveai/
 │
@@ -407,6 +343,7 @@ reviveai/
 ├── .env.example
 ├── .gitignore
 ├── package.json
+├── tsconfig.json
 ├── vite.config.ts
 └── README.md
 Core API
@@ -425,11 +362,11 @@ GET  /api/recovery/cases/:id
 POST /api/recovery/cases/:id/approve
 
 GET  /api/audit-trail
-Local Development
+Local Setup
 1. Clone
 git clone <YOUR_GITHUB_REPOSITORY_URL>
 cd reviveai
-2. Install
+2. Install dependencies
 npm install
 3. Configure environment
 
@@ -455,9 +392,9 @@ http://localhost:4000/api/health
 npm run dev
 Security
 
-Secrets are intentionally excluded from source control.
+Secrets must never be committed to the repository.
 
-Never commit:
+Do not commit:
 
 .env
 .env.local
@@ -465,57 +402,84 @@ data.db
 Razorpay secrets
 Gemini API keys
 
-Use .env.example for configuration documentation.
+Use .env.example for documenting required variables.
 
 Prototype Scope
 
 ReviveAI is a buildathon prototype.
 
-The demonstrated payment recovery flow uses Razorpay Test Mode.
-
-Some revenue-leak sources are represented through controlled demo inputs rather than production integrations.
-
+Payment recovery is demonstrated using Razorpay Test Mode.
+Some additional revenue-leak scenarios use controlled demo inputs.
 Guardrail configuration is currently session-based.
+Production messaging integrations are outside the current prototype scope.
+Production deployment would require persistent configuration, production-grade data infrastructure, secrets management, observability, and additional security controls.
 
-The prototype focuses on demonstrating the agentic decision loop, merchant control, recovery execution, verification, auditability, and measurable recovery outcomes.
+The prototype focuses on demonstrating the governed agentic recovery loop.
 
-What We Are Building Toward
+What Makes the Architecture Different?
 
-The long-term vision is a revenue-recovery agent that operates continuously across a merchant's payment operations.
+ReviveAI is not designed as:
 
-Instead of:
+LLM → Payment Action
 
-Detect → Alert → Human Work
+Instead:
 
-ReviveAI moves toward:
+LLM
+ ↓
+Diagnosis
+ ↓
+Deterministic Policy
+ ↓
+Merchant Authority
+ ↓
+ ┌────────────┬─────────────┐
+ ↓            ↓             ↓
+ACT         REVIEW         STOP
+ ↓            ↓
+ └──────┬─────┘
+        ↓
+Recovery
+        ↓
+Verification
+        ↓
+Audit + Metrics
 
-Observe
-   ↓
-Reason
-   ↓
-Act within boundaries
-   ↓
-Verify
-   ↓
-Learn from outcomes
+This creates a controlled boundary between AI reasoning and financial execution.
 
-The merchant remains in control while the agent handles the operational work.
+Buildathon Positioning
+Razorpay AI Buildathon 2026
+
+Track 03 — AI Revenue Recovery
+
+ReviveAI focuses on the complete revenue-recovery loop:
+
+Detect → Diagnose → Decide → Govern → Act → Verify → Audit → Measure
+
+The goal is not simply to predict which payments may fail.
+
+The goal is to turn a revenue-risk event into a governed, measurable recovery workflow.
 
 The ReviveAI Principle
 Autonomous by default. Governed by design. Verified by outcome.
 
-ReviveAI is not another revenue dashboard.
+AI insights. Merchant control. Real recovery outcomes.
 
-It is an attempt to turn revenue recovery into an agentic operating workflow where AI can reason and act, while merchant-defined guardrails determine how far that autonomy can go.
-
-Built for Razorpay AI Buildathon 2026
-Track 03 — AI Revenue Recovery
-
-Detect revenue at risk.
-Recover it intelligently.
-Keep the merchant in control.
+Built for Razorpay AI Buildathon 2026 — Track 03: AI Revenue Recovery.
 
 
-**Important:** I intentionally used Razorpay's concepts such as **“observe, reason, execute,” “merchant is always in control,” “guardrails,” “verified data/actions,” and “full audit trail”** because they align closely with Razorpay's current Agent Studio positioning. 
+### Critical: why this version will look better on GitHub
 
-Also, I did **not** claim that your prototype has production WhatsApp, live checkout, live subscription, or live receivables integrations. That's important when a technical reviewer reads the README.
+Your previous README had the Mermaid block effectively rendered as ordinary text. **Do not remove the three backticks around the Mermaid architecture.**
+
+It must literally begin like this in GitHub:
+
+````markdown
+```mermaid
+flowchart TB
+...
+
+GitHub will render that as a **proper architecture diagram**, not the ugly text/arrow output in your screenshots.
+
+Also, **delete the old 521-line README completely and replace it**. Don't append this underneath the existing content.
+
+One more thing: your screenshots show the GitHub repo is already public. Before the final submissio
