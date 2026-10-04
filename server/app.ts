@@ -11,10 +11,23 @@ import { AuditEventRepository } from './repositories/auditEventRepository';
 import { RecoveryService } from './services/recoveryService';
 import { RazorpayService } from './services/razorpayService';
 import { getGuardrailConfig, updateGuardrailConfig } from './services/guardrailConfig';
+import cors from 'cors';
 
 const app = express();
 
+app.use(
+  cors({
+    origin: [
+      'https://revive-ai-one.vercel.app',
+      'http://localhost:3000',
+      'http://localhost:5173',
+    ],
+    credentials: true,
+  })
+);
+
 app.use(cors());
+
 
 // Health Check endpoint
 app.get('/api/health', (req, res) => {
