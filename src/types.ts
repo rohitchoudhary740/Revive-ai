@@ -310,3 +310,298 @@ export interface RecoveryStrategyItem {
   bestTrigger: string;
 }
 
+// ----------------------------------------------------
+// BATCH EVALUATION TYPES (Track 03 Measured Recovery)
+// ----------------------------------------------------
+export interface EvaluationStrategyMetrics {
+  totalRevenueAtRisk: number;
+  expectedRecoverableRevenue: number;
+  interventionsAttempted: number;
+  successfulRecoveries: number;
+  recoveredRevenue: number;
+  recoveryRate: number;
+  recoveryRatePercent: number;
+  recoveryRatePerIntervention: number;
+  recoveryRatePerInterventionPercent: number;
+  unnecessaryInterventions: number;
+  humanReviewCases: number;
+  stoppedCases: number;
+  averageRecoveryValue: number;
+  policyBlockedValue: number;
+}
+
+export interface EvaluationLiftMetrics {
+  recoveredRevenueLift: number;
+  revenueLiftPercent: number;
+  recoveryRateLiftPercentPoints: number;
+  interventionEfficiencyLiftPercent: number;
+  unnecessaryInterventionsReduced: number;
+}
+
+export interface EvaluationSyntheticCase {
+  id: string;
+  paymentId: string;
+  amount: number;
+  failureType: string;
+  failureCode: string;
+  paymentMethod: 'UPI' | 'CARD' | 'NETBANKING';
+  retryCount: number;
+  customerName: string;
+  customerEmail: string;
+  customerPhone?: string;
+  customerTier: 'B2C Customer' | 'B2B Merchant' | 'Enterprise Client';
+  groundTruthProb: number;
+  groundTruthRecoverable: boolean;
+  isSynthetic: true;
+  reviveAi: {
+    rootCause: string;
+    confidence: number;
+    recoveryProbability: number;
+    recommendedAction:
+      | 'smart_retry'
+      | 'whatsapp_payment_link'
+      | 'delayed_retry'
+      | 'payment_method_update'
+      | 'stop'
+      | 'human_review'
+      | 'whatsapp_recovery'
+      | 'payment_link'
+      | 'human_approval';
+    expectedRecovery: number;
+    policyStatus: string;
+    isApproved: boolean;
+    requiresHumanApproval: boolean;
+    isStopped: boolean;
+    intervened: boolean;
+    recovered: boolean;
+    recoveredRevenue: number;
+    unnecessaryIntervention: boolean;
+  };
+  baseline: {
+    action: string;
+    intervened: boolean;
+    recovered: boolean;
+    recoveredRevenue: number;
+    unnecessaryIntervention: boolean;
+  };
+}
+
+export interface BatchEvaluationRun {
+  runId: string;
+  createdAt: string;
+  seed: number;
+  batchSize: number;
+  isSynthetic: true;
+  disclaimer: string;
+  guardrailsSnapshot: any;
+  baseline: EvaluationStrategyMetrics;
+  reviveAi: EvaluationStrategyMetrics;
+  lift: EvaluationLiftMetrics;
+  sampleCases: EvaluationSyntheticCase[];
+}
+
+// ─── Layer 2: Adaptive Closed-Loop Strategy & Journey Types ────────────────
+export type RecoveryStrategyId =
+  | 'smart_retry'
+  | 'whatsapp_payment_link'
+  | 'delayed_retry'
+  | 'payment_method_update'
+  | 'human_review'
+  | 'stop';
+
+export interface RecoveryStrategyDefinition {
+  id: RecoveryStrategyId;
+  name: string;
+  description: string;
+  applicableFailureTypes: string[];
+  maxAttempts: number;
+  cooldownSeconds: number;
+  requiredPolicyPermission: 'AUTO_RETRY' | 'CUSTOMER_COMMUNICATION' | 'MANUAL_APPROVAL' | 'TERMINAL_HALT';
+  verificationRequirement: 'webhook_payment_captured' | 'payment_link_paid' | 'operator_signoff' | 'none';
+  isCustomerContact: boolean;
+}
+
+export interface RecoveryJourneyStep {
+  id: string;
+  case_id: string;
+  attempt_number: number;
+  strategy_id: RecoveryStrategyId;
+  strategy_name: string;
+  reasoning: string;
+  policy_approved: number;
+  policy_checks: string;
+  policy_status_text: string;
+  action_status: 'pending' | 'executed' | 'failed' | 'skipped';
+  action_payload: string;
+  outcome: 'success' | 'failure' | 'in_progress' | 'pending_verification';
+  failure_reason?: string | null;
+  next_action?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecoveryJourneyData {
+  caseId: string;
+  status: string;
+  currentStage: string;
+  totalAttempts: number;
+  steps: RecoveryJourneyStep[];
+  isTerminal: boolean;
+  finalDecision: string;
+}
+
+// ─── Layer 3: Recovery Strategy Intelligence & Explainability Types ─────────
+export interface GeminiStrategyIntelligence {
+  diagnosis: string;
+  confidence: number;
+  recovery_probability: number;
+  recommended_strategy: RecoveryStrategyId;
+  reasoning: string;
+  evidence: string[];
+  alternative_strategy: RecoveryStrategyId | null;
+  why_not_alternative: string;
+  risk_flags: string[];
+}
+
+export interface ExplainabilityReport {
+  caseId: string;
+  amount: number;
+  failureCode: string;
+  aiRecommendation: {
+    recommendedStrategy: {
+      id: RecoveryStrategyId;
+      name: string;
+      description: string;
+    };
+    confidence: number;
+    recoveryProbability: number;
+    reasoning: string;
+    evidence: string[];
+    alternativeConsidered: {
+      id: RecoveryStrategyId | null;
+      name: string | null;
+      whyRejected: string;
+    };
+    riskFlags: string[];
+    isFallback: boolean;
+  };
+  deterministicPolicyDecision: {
+    isApproved: boolean;
+    requiresHumanApproval: boolean;
+    isStopped: boolean;
+    statusText: string;
+    checks: {
+      name: string;
+      passed: boolean;
+      detail: string;
+    }[];
+  };
+  authorityStatement: string;
+  createdAt: string;
+}
+
+// ─── Layer 4: Merchant Policy Impact Simulator Types ────────────────────────
+export interface PolicyComparisonMetrics {
+  autoRecoverCases: number;
+  humanReviewCases: number;
+  stoppedCases: number;
+  interventions: number;
+  expectedRecovery: number;
+  recoveredRevenue: number;
+  policyBlockedRevenue: number;
+  recoveryRate: number; // percentage e.g. 74.2
+  unnecessaryInterventions: number;
+}
+
+export interface PolicyImpactDeltas {
+  autoRecoverCases: number;
+  humanReviewCases: number;
+  stoppedCases: number;
+  interventions: number;
+  expectedRecovery: number;
+  recoveredRevenue: number;
+  policyBlockedRevenue: number;
+  recoveryRate: number;
+  unnecessaryInterventions: number;
+  highValueMovedToAuto: number;
+}
+
+export interface SafetyTradeOff {
+  riskLevel: 'MINIMAL' | 'BALANCED' | 'ELEVATED';
+  headline: string;
+  tradeOffPoints: string[];
+  recommendedSafeguard: string;
+}
+
+export interface PolicyTransitionCase {
+  caseId: string;
+  amount: number;
+  failureCode: string;
+  customerName: string;
+  before: {
+    status: 'Auto Recover' | 'Human Review' | 'Stopped';
+    isApproved: boolean;
+    policyStatus: string;
+  };
+  after: {
+    status: 'Auto Recover' | 'Human Review' | 'Stopped';
+    isApproved: boolean;
+    policyStatus: string;
+  };
+  shiftType: 'review_to_auto' | 'stop_to_auto' | 'auto_to_review' | 'auto_to_stop' | 'unchanged';
+}
+
+export interface PolicyImpactSimulationResult {
+  isSimulation: true;
+  disclaimer: string;
+  activeGuardrails: {
+    maxAutoRecoveryAmount: number;
+    minRecoveryProbability: number;
+    maxAutomatedRetries: number;
+    highValueRequiresApproval: boolean;
+    lowConfidenceStops: boolean;
+    agentMode: string;
+  };
+  simulatedGuardrails: {
+    maxAutoRecoveryAmount: number;
+    minRecoveryProbability: number;
+    maxAutomatedRetries: number;
+    highValueRequiresApproval: boolean;
+    lowConfidenceStops: boolean;
+    agentMode: string;
+  };
+  batchSize: number;
+  seed: number;
+  currentPolicy: PolicyComparisonMetrics;
+  simulatedPolicy: PolicyComparisonMetrics;
+  impactDeltas: PolicyImpactDeltas;
+  safetyTradeOff: SafetyTradeOff;
+  sampleTransitionCases: PolicyTransitionCase[];
+  executionTimeMs?: number;
+  totalEvaluatedCases?: number;
+  createdAt: string;
+}
+
+// ─── Layer 5: Financial Safety and Failure Handling Types ───────────────────
+export type ExecutionMode = 'DEMO' | 'SIMULATED' | 'TEST_MODE' | 'LIVE';
+
+export interface SafetyBlockEvent {
+  caseId: string;
+  reason: string;
+  rule:
+    | 'IDEMPOTENCY'
+    | 'TERMINAL_STATE'
+    | 'AMOUNT_VERIFICATION'
+    | 'POLICY_RECHECK'
+    | 'STALE_DECISION'
+    | 'VERIFICATION_TIMEOUT'
+    | 'DUPLICATE_WEBHOOK'
+    | 'EXTERNAL_FAILURE'
+    | 'AI_FAILURE';
+  mode: ExecutionMode;
+  timestamp: string;
+}
+
+
+
+

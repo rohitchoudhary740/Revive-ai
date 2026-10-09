@@ -4,14 +4,30 @@ import { ActiveRecoveryItem } from '../types';
 export interface AuditEvent {
   id: string;
   timestamp: string;
-  eventType: 'RECOVERY_SUCCESS' | 'SAFETY_APPROVED' | 'AI_DIAGNOSIS' | 'PAYMENT_FAILURE' | 'MANUAL_OVERRIDE';
+  eventType:
+    | 'RECOVERY_SUCCESS'
+    | 'SAFETY_APPROVED'
+    | 'SAFETY_BLOCKED'
+    | 'AI_DIAGNOSIS'
+    | 'PAYMENT_FAILURE'
+    | 'MANUAL_OVERRIDE'
+    | 'STRATEGY_SELECTED'
+    | 'STRATEGY_CHANGED'
+    | 'ACTION_EXECUTED'
+    | 'ACTION_FAILED'
+    | 'OUTCOME_EVALUATED'
+    | 'CASE_RECOVERED'
+    | 'CASE_STOPPED'
+    | 'ESCALATED'
+    | string;
   paymentId: string;
   customerName: string;
   amount: number;
   strategy: string;
   details: string;
-  actor: 'ReviveAI Autonomous Agent' | 'Policy Engine' | 'Merchant Admin';
-  status: 'VERIFIED' | 'COMPLIANT' | 'EXECUTED';
+  actor: string;
+  status: string;
+  executionMode?: 'DEMO' | 'SIMULATED' | 'TEST_MODE' | 'LIVE';
 }
 
 interface OverviewMetrics {

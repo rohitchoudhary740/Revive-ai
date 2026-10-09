@@ -11,7 +11,13 @@ import { AuditEventRepository } from './repositories/auditEventRepository';
 import { RecoveryService } from './services/recoveryService';
 import { RazorpayService } from './services/razorpayService';
 import { getGuardrailConfig, updateGuardrailConfig } from './services/guardrailConfig';
-import cors from 'cors';
+import { EvaluationRepository } from './repositories/evaluationRepository';
+import { runBatchEvaluation } from './services/evaluationEngine';
+import { getAllStrategies } from './services/strategyRegistry';
+import { ClosedLoopAgent } from './services/closedLoopAgent';
+import { StrategyIntelligenceService } from './services/strategyIntelligence';
+import { PolicySimulatorService } from './services/policySimulator';
+import { FinancialSafetyService } from './services/financialSafetyService';
 
 const app = express();
 
@@ -52,27 +58,7 @@ app.post(
 
     console.log(`[Webhook] Received Razorpay event. ID: ${eventId}, Signature: ${signature}`);
 
-    // 1. Enforce Webhook Idempotency
-    if (eventId) {
-      try {
-        const duplicate = await dbQuery.get(
-          `SELECT event_id FROM webhooks_received WHERE event_id = ?`,
-          [eventId]
-        );
-        if (duplicate) {
-          console.log(`[Webhook] Duplicate event ignored: ${eventId}`);
-          return res.status(200).send('Duplicate Event ignored');
-        }
-        await dbQuery.run(
-          `INSERT INTO webhooks_received (event_id, processed_at) VALUES (?, ?)`,
-          [eventId, new Date().toISOString()]
-        );
-      } catch (err: any) {
-        console.error('[Webhook] Idempotency check error:', err.message);
-      }
-    }
-
-    // 2. Cryptographic signature verification
+    // 1. Cryptographic signature verification
     let verified = false;
     if (secret && secret !== 'YOUR_RAZORPAY_WEBHOOK_SECRET') {
       const hmac = crypto.createHmac('sha256', secret);
@@ -89,17 +75,29 @@ app.post(
       return res.status(400).send('Invalid signature');
     }
 
-    // 3. Process the Webhook Event
+    // 2. Process the Webhook Event with Layer 5 Idempotency Protection
     try {
       const rawText = req.body.toString('utf8');
       const payload = JSON.parse(rawText);
       const event = payload.event;
+      const effectiveEventId =
+        (req.headers['x-razorpay-event-id'] as string) ||
+        payload.event_id ||
+        payload.id ||
+        `${event}_${payload.payload?.payment?.entity?.id || payload.payload?.payment_link?.entity?.id || Date.now()}`;
 
-      console.log(`[Webhook] Processing event type: ${event}`);
+      console.log(`[Webhook] Processing event type: ${event} (Event ID: ${effectiveEventId})`);
+
+      // Layer 5: Duplicate Webhook Protection Check
+      const isDuplicate = await FinancialSafetyService.isWebhookDuplicate(effectiveEventId, undefined, 'TEST_MODE');
+      if (isDuplicate) {
+        console.log(`[Webhook] Duplicate event ${effectiveEventId} blocked.`);
+        return res.status(200).send('DUPLICATE_EVENT_IGNORED');
+      }
 
       if (event === 'payment.failed') {
         const payment = payload.payload.payment.entity;
-        
+
         // Extract customer details or set fallbacks
         const customer = {
           name: payment.notes?.customer_name || 'Valued Customer',
@@ -117,14 +115,15 @@ app.post(
           payment.amount / 100, // convert paise to INR
           customer,
           failureCode,
-          failureReason
+          failureReason,
+          'TEST_MODE'
         );
-      } 
-      
+      }
+
       else if (event === 'payment_link.paid' || event === 'payment.captured') {
         // Recovery Payment Link has been completed
-        const entity = event === 'payment_link.paid' 
-          ? payload.payload.payment_link.entity 
+        const entity = event === 'payment_link.paid'
+          ? payload.payload.payment_link.entity
           : payload.payload.payment.entity;
 
         const caseId = entity.reference_id || entity.notes?.recovery_case_id;
@@ -133,12 +132,36 @@ app.post(
           : entity.id;
 
         if (caseId) {
-          // Verify we aren't processing an out-of-order duplicate capture
           const rc = await RecoveryCaseRepository.findById(caseId);
-          if (rc && rc.status !== 'recovered') {
-            await RecoveryService.handleRecoverySuccess(caseId, razorpayPaymentId, entity.amount);
+          if (rc) {
+            // Terminal-state protection
+            if (['recovered', 'stopped', 'cancelled', 'rejected'].includes(rc.status)) {
+              console.log(`[Webhook] Case ${caseId} is already in terminal state (${rc.status}). Ignoring duplicate settlement.`);
+              await FinancialSafetyService.logSafetyBlock(
+                caseId,
+                `Webhook payment capture ignored: case is already in terminal state '${rc.status}'.`,
+                'TEST_MODE'
+              );
+              return res.status(200).send('OK');
+            }
+
+            // Amount verification
+            const tx = await TransactionRepository.findById(rc.transaction_id);
+            const expectedPaise = (tx?.amount || 0) * 100;
+            if (expectedPaise > 0 && Math.abs(entity.amount - expectedPaise) > 1) {
+              console.error(`[Webhook] Amount mismatch for case ${caseId}: received ${entity.amount} paise, expected ${expectedPaise} paise.`);
+              await FinancialSafetyService.logSafetyBlock(
+                caseId,
+                `Webhook amount mismatch: received ₹${entity.amount / 100}, expected ₹${tx?.amount}. Held for human review.`,
+                'TEST_MODE'
+              );
+              await RecoveryCaseRepository.updateStatus(caseId, 'human_review', 'Webhook Amount Mismatch');
+              return res.status(200).send('OK');
+            }
+
+            await RecoveryService.handleRecoverySuccess(caseId, razorpayPaymentId, entity.amount, effectiveEventId, 'TEST_MODE');
           } else {
-            console.log(`[Webhook] Case ${caseId} already marked recovered or does not exist.`);
+            console.log(`[Webhook] Case ${caseId} not found in database.`);
           }
         } else {
           console.log(`[Webhook] No caseId found in notes or reference_id:`, entity);
@@ -162,7 +185,7 @@ app.post('/api/checkout', async (req, res) => {
   try {
     const receipt = `rcpt_${Date.now()}`;
     const order = await RazorpayService.createOrder(amount, receipt);
-    
+
     // Save transaction initially
     await TransactionRepository.save({
       id: order.id, // In local store, map local ID to order ID initially
@@ -334,7 +357,7 @@ app.get('/api/recovery/cases/:id', async (req, res) => {
   try {
     const c = await RecoveryCaseRepository.findById(caseId);
     if (!c) return res.status(404).json({ error: 'Not found' });
-    
+
     const tx = await TransactionRepository.findById(c.transaction_id);
     const diag = await AiDiagnosisRepository.findByCaseId(c.id);
     const policy = await PolicyDecisionRepository.findByCaseId(c.id);
@@ -436,6 +459,177 @@ app.post('/api/recovery/cases/:id/approve', async (req, res) => {
   }
 });
 
+// ─── LAYER 2: Adaptive Closed-Loop Agent Endpoints ─────────────────────────
+
+// API: Get typed recovery strategy registry
+app.get('/api/recovery/strategies', (req, res) => {
+  res.json(getAllStrategies());
+});
+
+// API: Get recovery journey steps for a case
+app.get('/api/recovery/cases/:id/journey', async (req, res) => {
+  try {
+    const journey = await ClosedLoopAgent.getCaseJourney(req.params.id);
+    res.json(journey);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Execute next step in adaptive closed loop
+app.post('/api/recovery/cases/:id/journey/step', async (req, res) => {
+  try {
+    const { overrideStrategyId, overrideOutcome, failureReason } = req.body;
+    const result = await ClosedLoopAgent.executeStep(req.params.id, {
+      overrideStrategyId,
+      overrideOutcome,
+      failureReason
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Simulate end-to-end multi-attempt adaptive scenario
+app.post('/api/recovery/cases/:id/journey/simulate-adaptive', async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    let rc = await RecoveryCaseRepository.findById(caseId);
+    if (!rc) {
+      // Auto-create fixture case if running against simulated or demo id
+      const txId = `tx_${caseId}`;
+      const now = new Date().toISOString();
+      await TransactionRepository.save({
+        id: txId,
+        order_id: `ord_${caseId}`,
+        amount: 5000,
+        currency: 'INR',
+        customer_name: 'Amit Sharma',
+        customer_email: 'amit.sharma@gmail.com',
+        customer_phone: '+919876543210',
+        status: 'failed',
+        failure_code: 'BANK_TIMEOUT',
+        failure_reason: 'Temporary Bank Gateway Timeout (504)',
+        created_at: now
+      });
+      await RecoveryCaseRepository.save({
+        id: caseId,
+        transaction_id: txId,
+        status: 'new',
+        current_stage: 'Detected',
+        created_at: now,
+        updated_at: now
+      });
+    } else if (rc.status === 'recovered' || rc.status === 'stopped') {
+      // Reset status so simulation can re-run
+      await RecoveryCaseRepository.updateStatus(caseId, 'new', 'Detected');
+    }
+
+    // Step 1: Immediate retry fails
+    const step1 = await ClosedLoopAgent.executeStep(caseId, {
+      overrideStrategyId: 'smart_retry',
+      overrideOutcome: 'failure',
+      failureReason: 'HDFC gateway latency exceeded 504 deadline'
+    });
+
+    // Step 2: Adaptive strategy change to WhatsApp link succeeds
+    const step2 = await ClosedLoopAgent.executeStep(caseId, {
+      overrideOutcome: 'success'
+    });
+
+    const journey = await ClosedLoopAgent.getCaseJourney(caseId);
+    res.json({
+      success: true,
+      attempts: [step1, step2],
+      journey
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Verify recovery payment and settle case (Layer 2)
+app.post('/api/recovery/cases/:id/verify-success', async (req, res) => {
+  const caseId = req.params.id;
+  try {
+    const rc = await RecoveryCaseRepository.findById(caseId);
+    if (!rc) return res.status(404).json({ error: 'Case not found' });
+    const tx = await TransactionRepository.findById(rc.transaction_id);
+    const amountPaise = tx ? tx.amount * 100 : 500000;
+    await RecoveryService.handleRecoverySuccess(caseId, `pay_verif_${Date.now()}`, amountPaise);
+    const journey = await ClosedLoopAgent.getCaseJourney(caseId);
+    res.json({ success: true, message: 'Recovery verified successfully', journey });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── LAYER 3: Recovery Strategy Intelligence & Explainability ─────────────
+
+// API: Retrieve "Why this action?" Explainability Report for a case
+app.get('/api/recovery/cases/:id/intelligence', async (req, res) => {
+  const rawId = req.params.id;
+  const cleanId = rawId.replace(/^#/, '');
+  try {
+    let rc =
+      (await RecoveryCaseRepository.findById(rawId)) ||
+      (await RecoveryCaseRepository.findById(cleanId)) ||
+      (await RecoveryCaseRepository.findById(`#${cleanId}`));
+    const targetCaseId = rc ? rc.id : cleanId;
+
+    if (!rc) {
+      // Auto-create fixture case if inspecting simulated demo ID
+      const txId = `tx_${targetCaseId}`;
+      const now = new Date().toISOString();
+      await TransactionRepository.save({
+        id: txId,
+        order_id: `ord_${targetCaseId}`,
+        amount: 5000,
+        currency: 'INR',
+        customer_name: 'Amit Sharma',
+        customer_email: 'amit.sharma@gmail.com',
+        customer_phone: '+919876543210',
+        status: 'failed',
+        failure_code: 'BANK_TIMEOUT',
+        failure_reason: 'Temporary Bank Gateway Timeout (504)',
+        created_at: now
+      });
+      await RecoveryCaseRepository.save({
+        id: targetCaseId,
+        transaction_id: txId,
+        status: 'new',
+        current_stage: 'Detected',
+        created_at: now,
+        updated_at: now
+      });
+    }
+
+    const report = await StrategyIntelligenceService.evaluateAndExplain(targetCaseId);
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Re-evaluate strategy intelligence on demand
+app.post('/api/recovery/cases/:id/intelligence/evaluate', async (req, res) => {
+  const rawId = req.params.id;
+  const cleanId = rawId.replace(/^#/, '');
+  try {
+    let rc =
+      (await RecoveryCaseRepository.findById(rawId)) ||
+      (await RecoveryCaseRepository.findById(cleanId)) ||
+      (await RecoveryCaseRepository.findById(`#${cleanId}`));
+    const targetCaseId = rc ? rc.id : cleanId;
+
+    const report = await StrategyIntelligenceService.evaluateAndExplain(targetCaseId);
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── RECOVERY OPPORTUNITIES: Recovery Engine (#recovery-opportunities) ───────
 app.get('/api/recovery/opportunities', async (req, res) => {
   try {
@@ -473,17 +667,17 @@ app.get('/api/recovery/opportunities', async (req, res) => {
 
     const opportunities = rows.map((r) => {
       const amount = r.amount || 0;
-      const probDecimal = r.recovery_probability !== null && r.recovery_probability !== undefined 
-        ? r.recovery_probability 
+      const probDecimal = r.recovery_probability !== null && r.recovery_probability !== undefined
+        ? r.recovery_probability
         : 0.70;
       const recoveryProbability = Math.round(probDecimal * 100);
       const expectedRecovery = Math.round((amount * recoveryProbability) / 100);
 
-      const customerType = amount >= 25000 
-        ? 'Enterprise Client' 
-        : amount >= 10000 
-        ? 'B2B Merchant' 
-        : 'B2C Customer';
+      const customerType = amount >= 25000
+        ? 'Enterprise Client'
+        : amount >= 10000
+          ? 'B2B Merchant'
+          : 'B2C Customer';
 
       const category = 'payment_failure';
 
@@ -504,18 +698,43 @@ app.get('/api/recovery/opportunities', async (req, res) => {
       let detailedAction = 'Wait 5-10 minutes → Retry via Fallback Gateway';
       let reason = r.ai_reason || 'Transient payment gateway degradation detected. Delayed retry maximizes recovery success.';
 
-      if (r.case_status === 'stopped') {
+      if (r.case_status === 'stopped' || r.recommended_action === 'stop') {
         recType = 'stop';
         actionText = 'STOP';
         iconType = 'stop';
         detailedAction = 'Halt retries & flag transaction for risk sentinel';
         reason = r.ai_reason || 'Autonomous recovery halted to safeguard merchant policy thresholds.';
-      } else if (r.recommended_action === 'whatsapp_recovery' || r.channel === 'whatsapp') {
+      } else if (
+        r.recommended_action === 'whatsapp_payment_link' ||
+        r.recommended_action === 'whatsapp_recovery' ||
+        r.channel === 'whatsapp'
+      ) {
         recType = 'payment_link';
         actionText = 'WhatsApp Link';
         iconType = 'lightning';
         detailedAction = 'Dispatch Smart 1-Click WhatsApp Payment Link';
         reason = r.ai_reason || 'Engaging customer via verified messaging channel with auto-filled checkout link.';
+      } else if (r.recommended_action === 'smart_retry' || r.recommended_action === 'retry_now') {
+        recType = 'smart_retry';
+        actionText = 'Smart Retry';
+        iconType = 'lightning';
+        detailedAction = 'Autonomous Gateway Reroute via Alternate Node';
+        reason = r.ai_reason || 'Immediate passive retry via alternate acquiring route without customer friction.';
+      } else if (r.recommended_action === 'delayed_retry') {
+        recType = 'delayed_retry';
+        actionText = 'Delayed Retry';
+        iconType = 'clock';
+        detailedAction = 'Wait 5-10 minutes → Retry via Fallback Gateway';
+        reason = r.ai_reason || 'Transient payment gateway degradation detected. Delayed retry maximizes recovery success.';
+      } else if (
+        r.recommended_action === 'payment_method_update' ||
+        r.recommended_action === 'update_payment_method'
+      ) {
+        recType = 'update_payment_method';
+        actionText = 'Update Payment Method';
+        iconType = 'link';
+        detailedAction = 'Prompt Customer to Select Alternate Payment Method';
+        reason = r.ai_reason || 'Instrument expired or balance exhausted. Prompting customer for alternate instrument.';
       } else if (r.recommended_action === 'payment_link') {
         recType = 'payment_link';
         actionText = 'Payment link';
@@ -630,8 +849,8 @@ app.get('/api/recovery/opportunities', async (req, res) => {
         recoveryOpportunitiesCount: totalOpportunities,
         expectedRecovery,
         needApprovalCount,
-        netYieldPercent: potentiallyRecoverable > 0 
-          ? Math.round((expectedRecovery / potentiallyRecoverable) * 1000) / 10 
+        netYieldPercent: potentiallyRecoverable > 0
+          ? Math.round((expectedRecovery / potentiallyRecoverable) * 1000) / 10
           : 0,
       }
     });
@@ -679,6 +898,231 @@ app.put('/api/guardrails', (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Layer 4: Merchant Policy Impact Simulator (READ-ONLY)
+app.post('/api/guardrails/simulate-impact', (req, res) => {
+  try {
+    const {
+      maxAutoRecoveryAmount,
+      minRecoveryProbability,
+      maxAutomatedRetries,
+      highValueRequiresApproval,
+      lowConfidenceStops,
+      agentMode,
+      seed,
+      batchSize
+    } = req.body || {};
+
+    const simulationResult = PolicySimulatorService.simulatePolicyImpact(
+      {
+        maxAutoRecoveryAmount,
+        minRecoveryProbability,
+        maxAutomatedRetries,
+        highValueRequiresApproval,
+        lowConfidenceStops,
+        agentMode
+      },
+      { seed, batchSize }
+    );
+
+    res.json(simulationResult);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── BATCH RECOVERY EVALUATION ENGINE (Track 03 Measured Recovery) ───────────
+app.post('/api/evaluation/run', async (req, res) => {
+  try {
+    const { seed, batchSize, guardrails } = req.body || {};
+    const evalResult = runBatchEvaluation({
+      seed: typeof seed === 'number' ? seed : 42,
+      batchSize: typeof batchSize === 'number' ? batchSize : 500,
+      guardrails,
+    });
+
+    // Save run record to SQLite
+    await EvaluationRepository.saveRun({
+      id: evalResult.runId,
+      created_at: evalResult.createdAt,
+      seed: evalResult.seed,
+      batch_size: evalResult.batchSize,
+      guardrails_snapshot: JSON.stringify(evalResult.guardrailsSnapshot),
+      baseline_metrics: JSON.stringify(evalResult.baseline),
+      reviveai_metrics: JSON.stringify(evalResult.reviveAi),
+      lift_metrics: JSON.stringify(evalResult.lift),
+      summary_notes: `Batch evaluation run with seed=${evalResult.seed}, batchSize=${evalResult.batchSize}`
+    });
+
+    // Save cases to SQLite
+    if (evalResult.allCases && evalResult.allCases.length > 0) {
+      const caseRecords = evalResult.allCases.map((c) => ({
+        id: `${evalResult.runId}_${c.id}`,
+        run_id: evalResult.runId,
+        payment_id: c.paymentId,
+        customer_name: c.customerName,
+        customer_email: c.customerEmail,
+        customer_tier: c.customerTier,
+        amount: c.amount,
+        failure_code: c.failureCode,
+        failure_type: c.failureType,
+        retry_count: c.retryCount,
+        ground_truth_prob: c.groundTruthProb,
+        reviveai_prob: c.reviveAi.recoveryProbability,
+        reviveai_action: c.reviveAi.recommendedAction,
+        reviveai_policy_status: c.reviveAi.policyStatus,
+        reviveai_is_approved: c.reviveAi.isApproved ? 1 : 0,
+        reviveai_is_human_review: c.reviveAi.requiresHumanApproval ? 1 : 0,
+        reviveai_is_stopped: c.reviveAi.isStopped ? 1 : 0,
+        reviveai_intervened: c.reviveAi.intervened ? 1 : 0,
+        reviveai_recovered: c.reviveAi.recovered ? 1 : 0,
+        reviveai_recovered_revenue: c.reviveAi.recoveredRevenue,
+        baseline_intervened: c.baseline.intervened ? 1 : 0,
+        baseline_recovered: c.baseline.recovered ? 1 : 0,
+        baseline_recovered_revenue: c.baseline.recoveredRevenue,
+        is_synthetic: 1,
+        created_at: evalResult.createdAt,
+      }));
+      await EvaluationRepository.saveCases(caseRecords);
+    }
+
+    const { allCases, ...responsePayload } = evalResult;
+    res.json({
+      success: true,
+      ...responsePayload,
+    });
+  } catch (err: any) {
+    console.error('[API] /api/evaluation/run error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/evaluation/results', async (req, res) => {
+  try {
+    const runId = req.query.runId as string | undefined;
+    let runRecord = runId
+      ? await EvaluationRepository.findRunById(runId)
+      : await EvaluationRepository.findLatestRun();
+
+    // If no evaluation has been run yet, execute the default reproducible run (seed: 42, batch: 500)
+    if (!runRecord) {
+      const defaultEval = runBatchEvaluation({ seed: 42, batchSize: 500 });
+      runRecord = {
+        id: defaultEval.runId,
+        created_at: defaultEval.createdAt,
+        seed: defaultEval.seed,
+        batch_size: defaultEval.batchSize,
+        guardrails_snapshot: JSON.stringify(defaultEval.guardrailsSnapshot),
+        baseline_metrics: JSON.stringify(defaultEval.baseline),
+        reviveai_metrics: JSON.stringify(defaultEval.reviveAi),
+        lift_metrics: JSON.stringify(defaultEval.lift),
+        summary_notes: 'Initial default seeded batch evaluation (seed=42, size=500)',
+      };
+      await EvaluationRepository.saveRun(runRecord);
+
+      if (defaultEval.allCases && defaultEval.allCases.length > 0) {
+        const caseRecords = defaultEval.allCases.map((c) => ({
+          id: `${defaultEval.runId}_${c.id}`,
+          run_id: defaultEval.runId,
+          payment_id: c.paymentId,
+          customer_name: c.customerName,
+          customer_email: c.customerEmail,
+          customer_tier: c.customerTier,
+          amount: c.amount,
+          failure_code: c.failureCode,
+          failure_type: c.failureType,
+          retry_count: c.retryCount,
+          ground_truth_prob: c.groundTruthProb,
+          reviveai_prob: c.reviveAi.recoveryProbability,
+          reviveai_action: c.reviveAi.recommendedAction,
+          reviveai_policy_status: c.reviveAi.policyStatus,
+          reviveai_is_approved: c.reviveAi.isApproved ? 1 : 0,
+          reviveai_is_human_review: c.reviveAi.requiresHumanApproval ? 1 : 0,
+          reviveai_is_stopped: c.reviveAi.isStopped ? 1 : 0,
+          reviveai_intervened: c.reviveAi.intervened ? 1 : 0,
+          reviveai_recovered: c.reviveAi.recovered ? 1 : 0,
+          reviveai_recovered_revenue: c.reviveAi.recoveredRevenue,
+          baseline_intervened: c.baseline.intervened ? 1 : 0,
+          baseline_recovered: c.baseline.recovered ? 1 : 0,
+          baseline_recovered_revenue: c.baseline.recoveredRevenue,
+          is_synthetic: 1,
+          created_at: defaultEval.createdAt,
+        }));
+        await EvaluationRepository.saveCases(caseRecords);
+      }
+    }
+
+    // Fetch sample cases (limit 50)
+    const caseRecords = await EvaluationRepository.findCasesByRunId(runRecord.id, 50, 0);
+    const sampleCases = caseRecords.map((r) => ({
+      id: r.id.includes('_') ? r.id.split('_')[1] : r.id,
+      paymentId: r.payment_id,
+      amount: r.amount,
+      failureType: r.failure_type,
+      failureCode: r.failure_code,
+      paymentMethod: 'UPI' as const,
+      retryCount: r.retry_count,
+      customerName: r.customer_name,
+      customerEmail: r.customer_email,
+      customerPhone: '',
+      customerTier: (r.customer_tier || 'B2C Customer') as any,
+      groundTruthProb: r.ground_truth_prob,
+      groundTruthRecoverable: r.ground_truth_prob > 0.2,
+      isSynthetic: true as const,
+      reviveAi: {
+        rootCause: r.failure_type,
+        confidence: 0.9,
+        recoveryProbability: r.reviveai_prob,
+        recommendedAction: r.reviveai_action as any,
+        expectedRecovery: Math.round(r.amount * r.reviveai_prob),
+        policyStatus: r.reviveai_policy_status,
+        isApproved: Boolean(r.reviveai_is_approved),
+        requiresHumanApproval: Boolean(r.reviveai_is_human_review),
+        isStopped: Boolean(r.reviveai_is_stopped),
+        intervened: Boolean(r.reviveai_intervened),
+        recovered: Boolean(r.reviveai_recovered),
+        recoveredRevenue: r.reviveai_recovered_revenue,
+        unnecessaryIntervention: Boolean(r.reviveai_intervened && !r.reviveai_recovered && r.ground_truth_prob <= 0.2),
+      },
+      baseline: {
+        action: Boolean(r.baseline_intervened) ? 'Blind Direct Retry / Blast' : 'None',
+        intervened: Boolean(r.baseline_intervened),
+        recovered: Boolean(r.baseline_recovered),
+        recoveredRevenue: r.baseline_recovered_revenue,
+        unnecessaryIntervention: Boolean(r.baseline_intervened && !r.baseline_recovered && r.ground_truth_prob <= 0.2),
+      },
+    }));
+
+    const allRuns = await EvaluationRepository.findAllRuns(10);
+    const recentRuns = allRuns.map((r) => ({
+      id: r.id,
+      createdAt: r.created_at,
+      seed: r.seed,
+      batchSize: r.batch_size,
+    }));
+
+    res.json({
+      run: {
+        runId: runRecord.id,
+        createdAt: runRecord.created_at,
+        seed: runRecord.seed,
+        batchSize: runRecord.batch_size,
+        isSynthetic: true,
+        disclaimer: 'Batch evaluation uses reproducible synthetic data and does not represent live merchant revenue.',
+        guardrailsSnapshot: JSON.parse(runRecord.guardrails_snapshot || '{}'),
+        baseline: JSON.parse(runRecord.baseline_metrics || '{}'),
+        reviveAi: JSON.parse(runRecord.reviveai_metrics || '{}'),
+        lift: JSON.parse(runRecord.lift_metrics || '{}'),
+        sampleCases,
+      },
+      recentRuns,
+    });
+  } catch (err: any) {
+    console.error('[API] /api/evaluation/results error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // ─── METRICS: Payment Signals / Revenue at Risk ─────────────────────────────
 // Aggregates from transactions + recovery_cases + ai_diagnoses.
@@ -847,9 +1291,9 @@ app.get('/api/metrics/payment-signals', async (req, res) => {
         riskLevel: c.amount >= 25000 ? 'High' : c.amount >= 10000 ? 'Medium' : 'Low',
         status: c.case_status === 'recovered' ? 'Recovered'
           : c.case_status === 'stopped' ? 'Stopped'
-          : c.case_status === 'human_review' ? 'Approval Required'
-          : (c.recovery_probability !== null && c.recovery_probability < 0.3) ? 'Low Probability'
-          : 'Recoverable',
+            : c.case_status === 'human_review' ? 'Approval Required'
+              : (c.recovery_probability !== null && c.recovery_probability < 0.3) ? 'Low Probability'
+                : 'Recoverable',
         category: 'payment_failure' as const,
       })),
     });

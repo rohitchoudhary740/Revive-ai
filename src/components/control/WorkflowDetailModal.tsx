@@ -27,6 +27,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { PageId } from '../../types';
+import { WhyThisActionCard } from './WhyThisActionCard';
 
 interface WorkflowDetailModalProps {
   stepNumber: number | null;
@@ -34,6 +35,7 @@ interface WorkflowDetailModalProps {
   onClose: () => void;
   onNavigate: (page: PageId) => void;
   simulationRecovered?: boolean;
+  caseId?: string;
 }
 
 export const WorkflowDetailModal: React.FC<WorkflowDetailModalProps> = ({
@@ -42,6 +44,7 @@ export const WorkflowDetailModal: React.FC<WorkflowDetailModalProps> = ({
   onClose,
   onNavigate,
   simulationRecovered = false,
+  caseId = 'REC-92831',
 }) => {
   if (!isOpen || stepNumber === null) return null;
 
@@ -331,6 +334,9 @@ export const WorkflowDetailModal: React.FC<WorkflowDetailModalProps> = ({
                 </div>
               </div>
 
+              {/* Layer 3: Context-Aware Strategy Intelligence */}
+              <WhyThisActionCard caseId={caseId} />
+
               {/* Selection Explanation */}
               <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200 text-xs text-slate-800 space-y-1">
                 <span className="font-bold font-mono text-indigo-900 uppercase text-[11px]">
@@ -359,6 +365,9 @@ export const WorkflowDetailModal: React.FC<WorkflowDetailModalProps> = ({
                   AI outputs probabilistic predictions, but our zero-trust deterministic policy layer strictly enforces safety guardrails before any customer communication occurs.
                 </p>
               </div>
+
+              {/* Layer 3: Context-Aware Explainability */}
+              <WhyThisActionCard caseId={caseId} />
 
               {/* Deterministic Policy Check List */}
               <div className="space-y-2">
@@ -620,6 +629,21 @@ export const WorkflowDetailModal: React.FC<WorkflowDetailModalProps> = ({
                   ✓ ₹5,000 has been credited to merchant settlement balance. Customer order #ORD-92831 is marked <strong>FULFILLED</strong> and dispatched to delivery queue.
                 </p>
               </div>
+
+              {/* Layer 2: View Multi-Attempt Recovery Journey */}
+              <button
+                id="modal-view-recovery-journey-btn"
+                onClick={() => {
+                  onClose();
+                  const el = document.getElementById('recovery-journey-section');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-bold font-mono flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                <Layers className="w-4 h-4 text-purple-600" />
+                <span>View Adaptive Recovery Journey (Multi-Attempt)</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
 
               {/* Direct Link to Audit Trail */}
               <button

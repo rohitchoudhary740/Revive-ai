@@ -10,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test server/tests/evaluationEngine.test.ts server/tests/closedLoopAgent.test.ts server/tests/strategyIntelligence.test.ts server/tests/policySimulator.test.ts server/tests/financialSafety.test.ts server/tests/strategySelection.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

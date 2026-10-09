@@ -78,9 +78,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
         <div className="flex flex-col items-center justify-center min-h-[300px] gap-4 text-center">
           <AlertOctagon className="w-10 h-10 text-amber-400" />
           <div>
-            <p className="text-sm font-semibold text-gray-800">Backend unavailable</p>
-            <p className="text-xs text-gray-500 mt-1">{metricsError}</p>
-            <p className="text-xs text-gray-400 mt-1">Make sure the Express server is running on port 4000.</p>
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Backend unavailable</p>
+            <p className="text-xs text-[var(--text-secondary)] mt-1">{metricsError}</p>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Make sure the Express server is running on port 4000.</p>
           </div>
           <button
             onClick={refreshMetrics}

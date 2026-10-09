@@ -7,9 +7,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from 'recharts';
-import { TrendingUp, BarChart2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { TrendingUp } from 'lucide-react';
 import { RECOVERY_CHART_DATA } from '../data/mockData';
 
 export const RecoveryChart: React.FC = () => {
@@ -30,18 +29,18 @@ export const RecoveryChart: React.FC = () => {
       const rate = atRisk > 0 ? ((recovered / atRisk) * 100).toFixed(1) : '0';
 
       return (
-        <div className="bg-slate-900/95 backdrop-blur-md text-white p-3.5 rounded-xl shadow-2xl border border-slate-800 text-xs font-mono">
-          <div className="font-bold text-slate-300 mb-2 pb-1.5 border-b border-slate-800 flex items-center justify-between gap-4">
+        <div className="bg-[var(--bg-surface)] text-[var(--text-primary)] p-3.5 rounded-xl shadow-xl border border-[var(--border-app)] text-xs font-mono">
+          <div className="font-bold text-[var(--text-secondary)] mb-2 pb-1.5 border-b border-[var(--border-subtle)] flex items-center justify-between gap-4">
             <span>Time: {label}</span>
-            <span className="text-emerald-400 font-bold">{rate}% Recovered</span>
+            <span className="text-emerald-500 font-bold">{rate}% Recovered</span>
           </div>
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-6 text-amber-300">
-              <span className="text-slate-300">Revenue at Risk:</span>
+            <div className="flex items-center justify-between gap-6 text-amber-500">
+              <span className="text-[var(--text-secondary)]">Revenue at Risk:</span>
               <span className="font-bold">{formatINR(atRisk)}</span>
             </div>
-            <div className="flex items-center justify-between gap-6 text-emerald-300">
-              <span className="text-slate-300">Recovered Revenue:</span>
+            <div className="flex items-center justify-between gap-6 text-emerald-500">
+              <span className="text-[var(--text-secondary)]">Recovered Revenue:</span>
               <span className="font-bold">{formatINR(recovered)}</span>
             </div>
           </div>
@@ -54,52 +53,52 @@ export const RecoveryChart: React.FC = () => {
   return (
     <div
       id="revenue-recovery-chart-card"
-      className="bg-white/80 backdrop-blur-md rounded-2xl p-6 border border-slate-150/80 shadow-[0_2px_12px_-2px_rgba(0,0,0,0.04)]"
+      className="bg-[var(--bg-surface)] rounded-2xl p-6 border border-[var(--border-app)] shadow-xs transition-colors"
     >
       {/* Chart Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border-app)]">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-bold text-slate-900 tracking-tight">
-              2. Revenue Recovery Trend
+            <h2 className="text-base font-bold text-[var(--text-primary)] tracking-tight">
+              Recovery Performance Trajectory
             </h2>
-            <span className="text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200/60 font-mono">
+            <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded-full fintech-badge-success">
               +24.6% WoW
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-[var(--text-secondary)] mt-0.5">
             Real-time tracking of failed payment spikes vs AI automated recovery capture
           </p>
         </div>
 
         {/* Time Selector Pills */}
-        <div className="flex items-center bg-slate-100/80 backdrop-blur-sm p-1 rounded-xl border border-slate-200/80 text-xs font-semibold">
+        <div className="flex items-center bg-[var(--bg-surface-elevated)] p-1 rounded-xl border border-[var(--border-app)] text-xs font-semibold">
           <button
             onClick={() => setTimeRange('24h')}
-            className={`px-3 py-1 rounded-lg transition-all ${
+            className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
               timeRange === '24h'
-                ? 'bg-white text-indigo-600 shadow-sm font-bold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs font-bold border border-[var(--border-app)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
             Today (24h)
           </button>
           <button
             onClick={() => setTimeRange('7d')}
-            className={`px-3 py-1 rounded-lg transition-all ${
+            className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
               timeRange === '7d'
-                ? 'bg-white text-indigo-600 shadow-sm font-bold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs font-bold border border-[var(--border-app)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
             7 Days
           </button>
           <button
             onClick={() => setTimeRange('30d')}
-            className={`px-3 py-1 rounded-lg transition-all ${
+            className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
               timeRange === '30d'
-                ? 'bg-white text-indigo-600 shadow-sm font-bold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs font-bold border border-[var(--border-app)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
             30 Days
@@ -110,18 +109,18 @@ export const RecoveryChart: React.FC = () => {
       {/* Chart Legend Metrics */}
       <div className="flex flex-wrap items-center gap-6 mt-4 mb-2 text-xs">
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-xs" />
-          <span className="text-slate-600 font-medium">Recovered Revenue</span>
-          <span className="font-bold text-slate-900 font-mono">₹3.82 Lakh</span>
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-2xs" />
+          <span className="text-[var(--text-secondary)] font-medium">Recovered Revenue</span>
+          <span className="font-bold text-[var(--text-primary)] font-mono">₹3.82 Lakh</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-xs" />
-          <span className="text-slate-600 font-medium">Revenue at Risk</span>
-          <span className="font-bold text-slate-900 font-mono">₹10.24 Lakh</span>
+          <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-2xs" />
+          <span className="text-[var(--text-secondary)] font-medium">Revenue at Risk</span>
+          <span className="font-bold text-[var(--text-primary)] font-mono">₹10.24 Lakh</span>
         </div>
-        <div className="flex items-center gap-2 ml-auto text-slate-500 font-mono text-[11px]">
-          <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
-          <span>Avg. Recovery Efficiency: <strong>59.5%</strong></span>
+        <div className="flex items-center gap-2 ml-auto text-[var(--text-secondary)] font-mono text-[11px]">
+          <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+          <span>Avg. Recovery Efficiency: <strong className="text-[var(--text-primary)]">59.5%</strong></span>
         </div>
       </div>
 
@@ -138,21 +137,23 @@ export const RecoveryChart: React.FC = () => {
                 <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.0} />
               </linearGradient>
               <linearGradient id="colorRecovered" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
                 <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
               </linearGradient>
             </defs>
 
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" className="text-[var(--border-subtle)] opacity-60" />
             <XAxis
               dataKey="time"
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: 'currentColor' }}
+              className="text-[var(--text-muted)]"
               tickLine={false}
-              axisLine={{ stroke: '#e2e8f0' }}
+              axisLine={{ stroke: 'currentColor' }}
             />
             <YAxis
               tickFormatter={formatINR}
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: 'currentColor' }}
+              className="text-[var(--text-muted)]"
               tickLine={false}
               axisLine={false}
             />

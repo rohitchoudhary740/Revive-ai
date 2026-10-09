@@ -10,7 +10,10 @@ import { ActiveRecoveriesPage } from './components/active/ActiveRecoveriesPage';
 import { CampaignsPage } from './components/campaigns/CampaignsPage';
 import { RecoveryStrategiesPage } from './components/strategies/RecoveryStrategiesPage';
 import { RecoveryControlPage } from './components/control/RecoveryControlPage';
+import { ApprovalsPage } from './components/approvals/ApprovalsPage';
+import { AuditTrailPage } from './components/audit/AuditTrailPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
+import { ThemeProvider } from './context/ThemeContext';
 import { RecoveryProvider } from './context/RecoveryContext';
 import { PageId } from './types';
 
@@ -57,7 +60,7 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] text-[#1C1C1C] flex font-sans relative selection:bg-blue-100 selection:text-blue-900">
+    <div className="min-h-screen bg-[var(--bg-app)] text-[var(--text-primary)] flex font-sans relative selection:bg-blue-500/20 selection:text-blue-600 transition-colors duration-200">
 
       {/* Fixed Left Sidebar */}
       <Sidebar currentPage={currentPage} onNavigate={handleNavigate} />
@@ -87,6 +90,10 @@ function AppContent() {
             <CampaignsPage onNavigate={handleNavigate} />
           ) : currentPage === 'recovery-strategies' ? (
             <RecoveryStrategiesPage onNavigate={handleNavigate} />
+          ) : currentPage === 'approvals' ? (
+            <ApprovalsPage onNavigate={handleNavigate} />
+          ) : currentPage === 'audit-trail' ? (
+            <AuditTrailPage onNavigate={handleNavigate} />
           ) : (
             <PlaceholderPage pageId={currentPage} onNavigate={handleNavigate} />
           )}
@@ -98,9 +105,11 @@ function AppContent() {
 
 export default function App() {
   return (
-    <RecoveryProvider>
-      <AppContent />
-    </RecoveryProvider>
+    <ThemeProvider>
+      <RecoveryProvider>
+        <AppContent />
+      </RecoveryProvider>
+    </ThemeProvider>
   );
 }
 

@@ -41,11 +41,16 @@ import { useRecovery } from '../../context/RecoveryContext';
 import {
   diagnosePaymentFailure,
   evaluateDeterministicSafetyRules,
+  normalizeClientStrategyId,
   AiDiagnosisResult,
   PolicyEvaluationResult,
+  InterventionOption,
 } from '../../services/aiDiagnosisService';
 import { WorkflowDetailModal } from './WorkflowDetailModal';
 import { FullscreenCheckoutModal, CheckoutMode } from './FullscreenCheckoutModal';
+import { RecoveryJourneyView } from './RecoveryJourneyView';
+import { WhyThisActionCard } from './WhyThisActionCard';
+import { WhyThisActionModal } from './WhyThisActionModal';
 
 interface RecoveryControlPageProps {
   onNavigate: (page: PageId) => void;
@@ -66,6 +71,12 @@ type SimulationState =
   | 'step5_whatsapp_read'
   | 'step5_customer_paying'
   | 'step5_customer_paid'
+  | 'step5_retry_executing'
+  | 'step5_retry_executed'
+  | 'step5_delayed_queued'
+  | 'step5_delayed_executing'
+  | 'step5_method_prompted'
+  | 'step5_method_updated'
   | 'step6_verification'
   | 'step7_recovered';
 
@@ -119,6 +130,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
   const [simState, setSimState] = useState<SimulationState>('idle');
   const [logs, setLogs] = useState<AgentLogEvent[]>(INITIAL_SYSTEM_LOGS);
   const [diagnosis, setDiagnosis] = useState<AiDiagnosisResult | null>(null);
+  const [selectedStrategy, setSelectedStrategy] = useState<'smart_retry' | 'whatsapp_payment_link' | 'delayed_retry' | 'update_payment_method' | 'human_review' | 'stop'>('whatsapp_payment_link');
   const [policy, setPolicy] = useState<PolicyEvaluationResult | null>(null);
   const [aiProgressIndex, setAiProgressIndex] = useState<number>(0);
   const [verificationProgress, setVerificationProgress] = useState<number>(0);
@@ -126,6 +138,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
   const [checkoutStatusText, setCheckoutStatusText] = useState<string>('Processing payment...');
   const [recoveryCaseId, setRecoveryCaseId] = useState<string | null>(null);
   const [fullscreenCheckoutMode, setFullscreenCheckoutMode] = useState<CheckoutMode | null>(null);
+  const [whyThisActionModalOpen, setWhyThisActionModalOpen] = useState<boolean>(false);
 
   // ACTIVE merchant guardrails (live from GET /api/guardrails). Seeded with the
   // server defaults so Step-04 renders immediately; the fetch overwrites them.
@@ -258,11 +271,11 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
               `Backend case ${recoveryCaseId}: ${found.status} — ${found.currentStage}`,
               found.status === 'Completed' ? 'success' : found.status === 'Stopped' ? 'warn' : 'info'
             );
-            
+
             if (found.status === 'Completed') {
               setSimState('step7_recovered');
             }
-            
+
             if (found.status === 'Completed' || found.status === 'Stopped' || found.status === 'Awaiting Approval') {
               clearInterval(timer);
             }
@@ -314,6 +327,67 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
       }, 50);
       timeoutsRef.current.push(poll as unknown as NodeJS.Timeout);
     });
+
+  const completeVerificationAndRecovery = async (runId: string, currentStrat?: string) => {
+    const gs = (ms: number) => guardedSleep(ms, runId);
+    const alive = () => execIdRef.current === runId && !abortRef.current;
+
+    // ── STEP 06: Payment Verification (4.5 s) ─────────────────────────────
+    setSimState('step6_verification');
+    setVerificationProgress(1);
+    addLog('⏳', 'Payment received — initiating verification...', 'info');
+
+    if (!await gs(900)) return;
+    if (!alive()) return;
+    setVerificationProgress(2);
+    addLog('🔐', 'Validating payment signature (SHA256 HMAC)...', 'info');
+
+    if (!await gs(900)) return;
+    if (!alive()) return;
+    setVerificationProgress(3);
+    addLog('🔗', 'Matching original failed order #ORD-92831...', 'info');
+
+    if (!await gs(900)) return;
+    if (!alive()) return;
+    setVerificationProgress(4);
+    addLog('💰', 'Amount confirmed: ₹5,000 = ₹5,000', 'info');
+
+    if (!await gs(900)) return;
+    if (!alive()) return;
+    addLog('✓', 'Payment verified and amount matched successfully', 'success');
+
+    if (!await gs(800)) return;
+    if (!alive()) return;
+
+    // ── STEP 07: Revenue Recovered ─────────────────────────────────────────
+    setSimState('step7_recovered');
+    addLog('💰', '₹5,000 recovered and settled to merchant balance!', 'success');
+
+    if (recoveryCaseId) {
+      try {
+        await fetch(`/api/recovery/cases/${recoveryCaseId}/verify-success`, { method: 'POST' });
+      } catch {
+        // backend verify error fallback
+      }
+    }
+
+    const stratName = currentStrat || selectedStrategy || 'whatsapp_payment_link';
+    const stratLabel =
+      stratName === 'smart_retry' ? 'Smart Immediate Retry' :
+      stratName === 'delayed_retry' ? 'Delayed Retry' :
+      stratName === 'update_payment_method' ? 'Update Payment Method' : 'WhatsApp Recovery';
+
+    completeRecovery({
+      paymentId: 'pay_92831',
+      customerName: 'Amit Sharma',
+      customerEmail: 'amit.sharma@gmail.com',
+      amount: 5000,
+      failureReason: diagnosis?.rootCauseLabel || 'Temporary Bank Degradation (504)',
+      strategy: stratLabel,
+      aiConfidence: Math.round((diagnosis?.confidence || 0.94) * 100),
+      recoveryProbability: Math.round((diagnosis?.recoveryProbability || 0.87) * 100),
+    });
+  };
 
   // ─── SINGLE SEQUENTIAL WORKFLOW RUNNER ─────────────────────────────────────
   // Uses execIdRef so any stale callbacks from a previous run are silently ignored.
@@ -380,8 +454,11 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
 
     if (!alive()) return;
     setDiagnosis(diagResult);
-    addLog('✓', 'Root cause identified: Temporary bank degradation (94% confidence)', 'ai');
-    addLog('📊', 'Recovery probability: 87% — Expected Value: ₹4,350', 'info');
+    const chosenStrat = normalizeClientStrategyId(diagResult.recommendedAction);
+    setSelectedStrategy(chosenStrat);
+
+    addLog('✓', `Root cause identified: ${diagResult.rootCauseLabel} (${Math.round(diagResult.confidence * 100)}% confidence)`, 'ai');
+    addLog('📊', `Recovery probability: ${Math.round(diagResult.recoveryProbability * 100)}% — Expected Value: ₹${diagResult.expectedRecoveryValue.toLocaleString('en-IN')}`, 'info');
 
     if (!await gs(500)) return;
 
@@ -390,15 +467,15 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     setSimState('step3_decision');
     addLog('⚡', 'Evaluating candidate recovery strategies...', 'action');
 
-    if (!await gs(1400)) return;
+    if (!await gs(1200)) return;
     if (!alive()) return;
-    addLog('📱', 'WhatsApp 1-click selected: highest yield at 87% (₹4,350)', 'action');
-
-    if (!await gs(1400)) return;
-    if (!alive()) return;
-    addLog('✓', 'Recovery strategy confirmed — proceeding to policy check', 'success');
+    addLog('🎯', `Selected strategy: ${diagResult.recommendedActionLabel || chosenStrat} (${Math.round(diagResult.recoveryProbability * 100)}% yield)`, 'action');
 
     if (!await gs(1200)) return;
+    if (!alive()) return;
+    addLog('✓', `Strategy confirmed — ${diagResult.reason}`, 'success');
+
+    if (!await gs(1000)) return;
 
     // ── STEP 04: Safety & Policy Check (3.5 s) ──────────────────────────────
     if (!alive()) return;
@@ -406,8 +483,10 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     addLog('⚖️', 'Deterministic safety evaluation started...', 'info');
 
     const polResult = evaluateDeterministicSafetyRules(
-      { amount: 5000, paymentMethod: 'UPI', failureCode: failureCode || 'BANK_TIMEOUT',
-        bankSuccessRate: 69, recentSimilarFailures: 17, customerPreviousRetryCount: 0 },
+      {
+        amount: 5000, paymentMethod: 'UPI', failureCode: failureCode || 'BANK_TIMEOUT',
+        bankSuccessRate: 69, recentSimilarFailures: 17, customerPreviousRetryCount: 0
+      },
       diagResult,
       activeGuardrails // ACTIVE merchant guardrails drive the cosmetic thresholds
     );
@@ -451,37 +530,83 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
 
     if (!await gs(800)) return;
 
-    // ── STEP 05: WhatsApp Recovery — WAITS for customer action ──────────────
+    // ── STEP 05: Execute Strategy [SELECTED STRATEGY] ───────────────────────
     if (!alive()) return;
-    setSimState('step5_whatsapp_prep');
-    addLog('📱', 'Generating secure 1-click WhatsApp recovery token...', 'action');
 
-    if (!await gs(900)) return;
-    if (!alive()) return;
-    setSimState('step5_whatsapp_approved');
-    addLog('✓', 'Recovery message approved & token generated', 'info');
+    if (chosenStrat === 'smart_retry') {
+      setSimState('step5_retry_executing');
+      addLog('⚡', 'Dispatching Smart Immediate Retry through backup acquiring route...', 'action');
+      if (!await gs(1200)) return;
+      if (!alive()) return;
+      addLog('🔄', 'Rerouted from degraded HDFC node to ICICI Gateway (99.4% SLA)', 'info');
+      if (!await gs(1200)) return;
+      if (!alive()) return;
+      setSimState('step5_retry_executed');
+      addLog('✓', 'Smart retry authorized & captured successfully', 'success');
+      if (!await gs(800)) return;
+      if (!alive()) return;
+      await completeVerificationAndRecovery(runId, chosenStrat);
+    } else if (chosenStrat === 'delayed_retry') {
+      setSimState('step5_delayed_queued');
+      addLog('⏳', 'Enqueued in automated Delayed Retry queue (15m window)...', 'action');
+      if (!await gs(1000)) return;
+      if (!alive()) return;
+      addLog('⚡', 'Simulated acquiring cooldown window completed [TEST_MODE]...', 'info');
+      setSimState('step5_delayed_executing');
+      if (!await gs(1200)) return;
+      if (!alive()) return;
+      addLog('✓', 'Delayed payment re-executed and captured', 'success');
+      if (!await gs(800)) return;
+      if (!alive()) return;
+      await completeVerificationAndRecovery(runId, chosenStrat);
+    } else if (chosenStrat === 'update_payment_method') {
+      setSimState('step5_method_prompted');
+      addLog('💳', 'Dispatched payment method update link to customer session...', 'action');
+      if (!await gs(1000)) return;
+      if (!alive()) return;
+      addLog('⚡', 'Simulated customer updating card to alternate UPI handle [TEST_MODE]...', 'info');
+      setSimState('step5_method_updated');
+      if (!await gs(1200)) return;
+      if (!alive()) return;
+      addLog('✓', 'New payment instrument authorized — settlement confirmed', 'success');
+      if (!await gs(800)) return;
+      if (!alive()) return;
+      await completeVerificationAndRecovery(runId, chosenStrat);
+    } else if (chosenStrat === 'human_review' || chosenStrat === 'stop') {
+      addLog('🛑', 'Action stopped by policy sentinel — no customer communication dispatched', 'warn');
+      addLog('📋', 'Case queued for merchant operations review', 'info');
+    } else {
+      // Default: WhatsApp 1-Click Recovery
+      setSimState('step5_whatsapp_prep');
+      addLog('📱', 'Generating secure 1-click WhatsApp recovery token...', 'action');
 
-    if (!await gs(700)) return;
-    if (!alive()) return;
-    setSimState('step5_whatsapp_sent');
-    addLog('📱', 'WhatsApp recovery message dispatched to +91 98765 43210', 'action');
+      if (!await gs(900)) return;
+      if (!alive()) return;
+      setSimState('step5_whatsapp_approved');
+      addLog('✓', 'Recovery message approved & token generated', 'info');
 
-    if (!await gs(900)) return;
-    if (!alive()) return;
-    setSimState('step5_whatsapp_delivered');
-    addLog('✓', 'Message delivered to device', 'info');
+      if (!await gs(700)) return;
+      if (!alive()) return;
+      setSimState('step5_whatsapp_sent');
+      addLog('📱', 'WhatsApp recovery message dispatched to +91 98765 43210', 'action');
 
-    if (!await gs(900)) return;
-    if (!alive()) return;
-    setSimState('step5_whatsapp_read');
-    addLog('✓', 'Customer opened WhatsApp recovery message', 'success');
-    addLog('⏳', 'Waiting for customer to click Pay ₹5,000...', 'info');
-    // STOP — wait for explicit customer action (handleCustomerPayViaWhatsApp)
+      if (!await gs(900)) return;
+      if (!alive()) return;
+      setSimState('step5_whatsapp_delivered');
+      addLog('✓', 'Message delivered to device', 'info');
+
+      if (!await gs(900)) return;
+      if (!alive()) return;
+      setSimState('step5_whatsapp_read');
+      addLog('✓', 'Customer opened WhatsApp recovery message', 'success');
+      addLog('⏳', 'Waiting for customer to click Pay ₹5,000...', 'info');
+      // STOP — wait for explicit customer action (handleCustomerPayViaWhatsApp)
+    }
   };
 
   // ─── ENTRY POINTS ───────────────────────────────────────────────────────────
 
-  const launchRecoveryFlow = (code: string, description: string) => {
+  const launchRecoveryFlow = async (code: string, description: string) => {
     // Abort any running flow
     abortRef.current = true;
     timeoutsRef.current.forEach(clearTimeout);
@@ -496,8 +621,39 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     setSimState('checkout_processing');
     setCheckoutStatusText('Payment failed — ReviveAI is analyzing the failure...');
 
+    // Bridge failure event into backend pipeline
+    const paymentId = `pay_fail_${Date.now()}`;
+    const orderId = `order_${Date.now()}`;
+    try {
+      const bridgeRes = await fetch('/api/recovery/failures', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentId,
+          orderId,
+          amount: 5000,
+          customer: {
+            name: 'Amit Sharma',
+            email: 'amit.sharma@gmail.com',
+            phone: '9876543210',
+          },
+          failureCode: code || 'BANK_TIMEOUT',
+          failureReason: description || 'Temporary Bank Gateway Timeout (504)',
+        }),
+      });
+      if (bridgeRes.ok) {
+        const data = await bridgeRes.json();
+        if (data.caseId) {
+          setRecoveryCaseId(data.caseId);
+          addLog('🔗', `Backend recovery case synchronized: ${data.caseId}`, 'success');
+        }
+      }
+    } catch {
+      // Backend sync error fallback - continues locally
+    }
+
     // Brief visual pause before starting the pipeline
-    const t = setTimeout(() => runRecoveryWorkflow(runId, code, description), 1200);
+    const t = setTimeout(() => runRecoveryWorkflow(runId, code, description), 800);
     timeoutsRef.current.push(t);
   };
 
@@ -665,48 +821,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
       if (!await gs(900)) return;
       if (!alive()) return;
 
-      // ── STEP 06: Payment Verification (4.5 s) ─────────────────────────────
-      setSimState('step6_verification');
-      setVerificationProgress(1);
-      addLog('⏳', 'Payment received — initiating verification...', 'info');
-
-      if (!await gs(900)) return;
-      if (!alive()) return;
-      setVerificationProgress(2);
-      addLog('🔐', 'Validating payment signature (SHA256 HMAC)...', 'info');
-
-      if (!await gs(900)) return;
-      if (!alive()) return;
-      setVerificationProgress(3);
-      addLog('🔗', 'Matching original failed order #ORD-92831...', 'info');
-
-      if (!await gs(900)) return;
-      if (!alive()) return;
-      setVerificationProgress(4);
-      addLog('💰', 'Amount confirmed: ₹5,000 = ₹5,000', 'info');
-
-      if (!await gs(900)) return;
-      if (!alive()) return;
-      addLog('✓', 'Payment verified and amount matched successfully', 'success');
-
-      if (!await gs(800)) return;
-      if (!alive()) return;
-
-      // ── STEP 07: Revenue Recovered ─────────────────────────────────────────
-      setSimState('step7_recovered');
-      addLog('💰', '₹5,000 recovered and settled to merchant balance!', 'success');
-
-      // Update global dashboard — called exactly once
-      completeRecovery({
-        paymentId: 'pay_92831',
-        customerName: 'Amit Sharma',
-        customerEmail: 'amit.sharma@gmail.com',
-        amount: 5000,
-        failureReason: 'Temporary Bank Degradation (504)',
-        strategy: 'WhatsApp Recovery',
-        aiConfidence: 94,
-        recoveryProbability: 87,
-      });
+      await completeVerificationAndRecovery(runId, 'whatsapp_payment_link');
     })();
   };
 
@@ -761,8 +876,8 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     activeGuardrails.agentMode === 'auto_recover'
       ? 'Auto Recover'
       : activeGuardrails.agentMode === 'review_first'
-      ? 'Review First'
-      : 'Manual Only';
+        ? 'Review First'
+        : 'Manual Only';
   const step4Checks = policy?.checks ?? null;
   const rawVerdict = backendGuardrail ?? policy?.statusText ?? null;
   const verdictClean = rawVerdict ? rawVerdict.replace(/^[^\p{L}\p{N}]+/u, '').trim() : null;
@@ -770,8 +885,8 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     ? /APPROVED/i.test(rawVerdict)
       ? 'ok'
       : /STOP|HALT/i.test(rawVerdict)
-      ? 'stop'
-      : 'review'
+        ? 'stop'
+        : 'review'
     : 'ok';
   const verdictSource = backendGuardrail ? 'Backend policy engine' : policy ? 'Local simulation' : null;
 
@@ -790,7 +905,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
         return simState === 'step4_policy';
       case 5:
         return (
-          simState.startsWith('step5_whatsapp') ||
+          simState.startsWith('step5_') ||
           simState === 'step5_customer_paying' ||
           simState === 'step5_customer_paid'
         );
@@ -807,52 +922,102 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
     if (simState === 'idle' || simState === 'checkout_processing') {
       return false;
     }
-    const states: SimulationState[] = [
-      'idle',
-      'checkout_processing',
-      'payment_failed',
-      'step1_detection',
-      'step2_diagnosis',
-      'step3_decision',
-      'step4_policy',
-      'step5_whatsapp_prep',
-      'step5_whatsapp_approved',
-      'step5_whatsapp_sent',
-      'step5_whatsapp_delivered',
-      'step5_whatsapp_read',
-      'step5_customer_paying',
-      'step5_customer_paid',
-      'step6_verification',
-      'step7_recovered',
-    ];
-    const currentIndex = states.indexOf(simState);
-
-    const stepCompleteIndex: Record<number, number> = {
-      1: states.indexOf('step2_diagnosis'),
-      2: states.indexOf('step3_decision'),
-      3: states.indexOf('step4_policy'),
-      4: states.indexOf('step5_whatsapp_prep'),
-      5: states.indexOf('step6_verification'),
-      6: states.indexOf('step7_recovered'),
-      7: states.indexOf('step7_recovered'),
-    };
-
-    if (stepNum === 7) {
-      return simState === 'step7_recovered';
-    }
-
-    return currentIndex >= (stepCompleteIndex[stepNum] ?? 999);
+    if (stepNum === 1) return simState !== 'payment_failed' && simState !== 'step1_detection';
+    if (stepNum === 2) return isStepCompleted(1) && simState !== 'step2_diagnosis';
+    if (stepNum === 3) return isStepCompleted(2) && simState !== 'step3_decision';
+    if (stepNum === 4) return isStepCompleted(3) && simState !== 'step4_policy';
+    if (stepNum === 5) return simState === 'step6_verification' || simState === 'step7_recovered';
+    if (stepNum === 6) return simState === 'step7_recovered';
+    if (stepNum === 7) return simState === 'step7_recovered';
+    return false;
   };
 
-  // Step definitions for the compact 7-step horizontal pipeline
+  const getSelectedStrategyLabel = () => {
+    switch (selectedStrategy) {
+      case 'smart_retry': return 'Smart Retry';
+      case 'delayed_retry': return 'Delayed Retry';
+      case 'update_payment_method': return 'Update Method';
+      case 'whatsapp_payment_link': return 'WhatsApp';
+      case 'human_review': return 'Review';
+      case 'stop': return 'Stop';
+      default: return 'Action';
+    }
+  };
+
+  const getSelectedStrategyIcon = () => {
+    switch (selectedStrategy) {
+      case 'smart_retry': return RotateCcw;
+      case 'delayed_retry': return Clock;
+      case 'update_payment_method': return CreditCard;
+      case 'whatsapp_payment_link': return Smartphone;
+      default: return Zap;
+    }
+  };
+
+  const getCandidateIcon = (id: string) => {
+    switch (id) {
+      case 'smart_retry': return RotateCcw;
+      case 'delayed_retry': return Clock;
+      case 'whatsapp_payment_link': return Smartphone;
+      case 'update_payment_method': return CreditCard;
+      case 'stop': return ShieldAlert;
+      default: return Zap;
+    }
+  };
+
+  const getInterventionCandidates = (): InterventionOption[] => {
+    if (diagnosis?.interventions && diagnosis.interventions.length > 0) {
+      return diagnosis.interventions;
+    }
+    return [
+      {
+        id: 'whatsapp_payment_link',
+        name: 'WhatsApp 1-Click Link',
+        channel: 'WhatsApp Verified Channel',
+        probability: selectedStrategy === 'whatsapp_payment_link' ? (diagnosis?.recoveryProbability ?? 0.87) : 0.85,
+        expectedValue: Math.round(5000 * (selectedStrategy === 'whatsapp_payment_link' ? (diagnosis?.recoveryProbability ?? 0.87) : 0.85)),
+        isRecommended: selectedStrategy === 'whatsapp_payment_link',
+        notes: 'Direct frictionless re-authorization link with verified business token.',
+      },
+      {
+        id: 'smart_retry',
+        name: 'Smart Immediate Retry',
+        channel: 'Direct PSP Alternate Node',
+        probability: selectedStrategy === 'smart_retry' ? (diagnosis?.recoveryProbability ?? 0.88) : 0.42,
+        expectedValue: Math.round(5000 * (selectedStrategy === 'smart_retry' ? (diagnosis?.recoveryProbability ?? 0.88) : 0.42)),
+        isRecommended: selectedStrategy === 'smart_retry',
+        notes: 'Immediate re-execution through backup acquiring node. Zero customer friction.',
+      },
+      {
+        id: 'delayed_retry',
+        name: 'Delayed Intelligent Retry',
+        channel: 'Auto-Retry Cooldown Queue',
+        probability: selectedStrategy === 'delayed_retry' ? (diagnosis?.recoveryProbability ?? 0.81) : 0.78,
+        expectedValue: Math.round(5000 * (selectedStrategy === 'delayed_retry' ? (diagnosis?.recoveryProbability ?? 0.81) : 0.78)),
+        isRecommended: selectedStrategy === 'delayed_retry',
+        notes: 'Scheduled retry after acquiring cluster node health normalizes (15m window).',
+      },
+      {
+        id: 'update_payment_method',
+        name: 'Update Payment Method',
+        channel: 'Interactive Method Switcher',
+        probability: selectedStrategy === 'update_payment_method' ? (diagnosis?.recoveryProbability ?? 0.79) : 0.35,
+        expectedValue: Math.round(5000 * (selectedStrategy === 'update_payment_method' ? (diagnosis?.recoveryProbability ?? 0.79) : 0.35)),
+        isRecommended: selectedStrategy === 'update_payment_method',
+        notes: 'Prompt customer to update expired card or switch to alternate UPI handle.',
+      },
+    ];
+  };
+
+  // Step definitions for the canonical 7-step horizontal pipeline
   const pipelineSteps = [
     { num: 1, name: 'Detection', short: '01 Detection', icon: AlertCircle },
-    { num: 2, name: 'Diagnosis', short: '02 Diagnosis', icon: BrainCircuit },
-    { num: 3, name: 'Decision', short: '03 Decision', icon: Zap },
-    { num: 4, name: 'Policy', short: '04 Policy', icon: ShieldCheck },
-    { num: 5, name: 'WhatsApp', short: '05 WhatsApp', icon: Smartphone },
-    { num: 6, name: 'Verify', short: '06 Verify', icon: CheckCircle2 },
-    { num: 7, name: 'Recovered', short: '07 Recovered', icon: Award },
+    { num: 2, name: 'AI Diagnosis', short: '02 AI Diagnosis', icon: BrainCircuit },
+    { num: 3, name: 'Strategy Selection', short: '03 Strategy Selection', icon: Zap },
+    { num: 4, name: 'Policy Authorization', short: '04 Policy Authorization', icon: ShieldCheck },
+    { num: 5, name: 'Execution', short: '05 Execution', icon: getSelectedStrategyIcon() },
+    { num: 6, name: 'Verification', short: '06 Verification', icon: CheckCircle2 },
+    { num: 7, name: 'Outcome', short: '07 Outcome', icon: Award },
   ];
 
   // Helper to get step status text dynamically
@@ -881,15 +1046,15 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
       {/* ========================================================================= */}
       {/* 1. TOP HERO AREA (Compact, High-Precision Fintech Header) */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="bg-[var(--bg-surface)] rounded-2xl p-5 border border-[var(--border-app)] shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors">
         <div>
           <div className="flex items-center gap-2.5">
-            <span className="p-1.5 rounded-md bg-blue-50 text-blue-600">
+            <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
               <Zap className="w-3.5 h-3.5" />
             </span>
             <div>
-              <h2 className="text-sm font-bold text-gray-900 tracking-tight">Command Center</h2>
-              <p className="text-[11px] text-gray-500 mt-0.5">Autonomous AI recovery in real time</p>
+              <h2 className="text-sm font-bold text-[var(--text-primary)] tracking-tight">Command Center</h2>
+              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">Autonomous AI recovery in real time</p>
             </div>
           </div>
         </div>
@@ -897,57 +1062,124 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
         {/* Right Header Status & Action Controls */}
         <div className="flex items-center gap-3">
           {/* Agent Status Pill */}
-          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-white border border-gray-200 shadow-sm">
+          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[var(--bg-surface-elevated)] border border-[var(--border-app)] shadow-xs">
             <span className="relative flex h-2 w-2">
               <span
-                className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  simState === 'step7_recovered'
+                className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${simState === 'step7_recovered'
                     ? 'bg-emerald-400'
                     : simState !== 'idle' && simState !== 'checkout_processing'
-                    ? 'bg-indigo-400'
-                    : 'bg-emerald-400'
-                }`}
+                      ? 'bg-indigo-400'
+                      : 'bg-emerald-400'
+                  }`}
               />
               <span
-                className={`relative inline-flex rounded-full h-2 w-2 ${
-                  simState === 'step7_recovered'
+                className={`relative inline-flex rounded-full h-2 w-2 ${simState === 'step7_recovered'
                     ? 'bg-emerald-400'
                     : simState !== 'idle' && simState !== 'checkout_processing'
-                    ? 'bg-indigo-400'
-                    : 'bg-emerald-400'
-                }`}
+                      ? 'bg-indigo-400'
+                      : 'bg-emerald-400'
+                  }`}
               />
             </span>
             <div className="text-left">
-              <div className="text-[10px] font-semibold tracking-wider uppercase font-mono text-gray-700 flex items-center gap-1">
+              <div className="text-[10px] font-semibold tracking-wider uppercase font-mono text-[var(--text-secondary)] flex items-center gap-1">
                 {simState === 'step7_recovered' ? (
-                  <span className="text-emerald-600">✓ RECOVERY COMPLETE</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">✓ RECOVERY COMPLETE</span>
                 ) : simState !== 'idle' && simState !== 'checkout_processing' ? (
-                  <span className="text-blue-600">● RECOVERY IN PROGRESS</span>
+                  <span className="text-blue-600 dark:text-blue-400">● RECOVERY IN PROGRESS</span>
                 ) : (
-                  <span className="text-emerald-600">● AI AGENT ACTIVE</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">● AI AGENT ACTIVE</span>
                 )}
               </div>
-              <p className="text-[9px] text-gray-400 font-mono leading-none mt-0.5">
+              <p className="text-[9px] text-[var(--text-muted)] font-mono leading-none mt-0.5">
                 {simState === 'step7_recovered'
                   ? '₹5,000 recovered'
                   : simState !== 'idle' && simState !== 'checkout_processing'
-                  ? '₹5,000 payment'
-                  : 'Monitoring payment activity'}
+                    ? '₹5,000 payment'
+                    : 'Monitoring payment activity'}
               </p>
             </div>
           </div>
 
-          {/* Primary Action Button */}
+          {/* Batch Evaluation Button */}
+          <button
+            id="view-batch-evaluation-btn"
+            type="button"
+            onClick={() => onNavigate('merchant-overview')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-surface-elevated)] hover:bg-[var(--bg-surface)] text-blue-600 dark:text-blue-400 text-xs font-semibold rounded-lg border border-[var(--border-app)] hover:border-[var(--border-strong)] transition-all cursor-pointer shadow-xs"
+            title="View Reproducible Batch Recovery Evaluation Engine"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+            <span>Batch Evaluation (500 cases)</span>
+          </button>
+
+          {/* Layer 2: Recovery Journey Quick Anchor */}
+          <button
+            id="view-recovery-journey-btn"
+            type="button"
+            onClick={() => {
+              const el = document.getElementById('recovery-journey-section');
+              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 text-xs font-semibold rounded-lg border border-purple-200 transition-all cursor-pointer"
+            title="Jump to Layer 2 Adaptive Closed-Loop Recovery Journey"
+          >
+            <Layers className="w-3.5 h-3.5 text-purple-600" />
+            <span>Recovery Journey</span>
+          </button>
+
+          {/* Layer 3: Why This Action (AI Strategy Intelligence) */}
+          <button
+            id="view-why-this-action-btn"
+            type="button"
+            onClick={() => setWhyThisActionModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-lg border border-emerald-300 transition-all cursor-pointer shadow-xs"
+            title="Explain AI Strategy Recommendation & Policy Guardrails"
+          >
+            <BrainCircuit className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Why This Action?</span>
+          </button>
+
+          {/* Primary Action Button & Strategy Triggers */}
           {simState === 'idle' ? (
-            <button
-              id="simulate-payment-failure-btn"
-              onClick={startSimulation}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-xs font-semibold rounded-lg shadow-sm transition-all cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Simulate Payment Failure</span>
-            </button>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                id="simulate-payment-failure-btn"
+                onClick={startSimulation}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-xs font-semibold rounded-lg shadow-sm transition-all cursor-pointer"
+                title="Launch Razorpay Test Mode Checkout (₹5,000 → WhatsApp 1-Click Recovery)"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>₹5,000 Live Checkout</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => launchRecoveryFlow('BANK_TIMEOUT', 'Bank Gateway Timeout (NPCI 504)')}
+                className="inline-flex items-center gap-1 px-2.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-mono font-medium rounded-lg border border-blue-200 transition-all cursor-pointer"
+                title="Test Context-Aware Selection: Bank Timeout → Smart Retry"
+              >
+                <RotateCcw className="w-3 h-3 text-blue-600" />
+                <span>Test Smart Retry</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => launchRecoveryFlow('GATEWAY_ERROR', 'Gateway 502 Cluster Degradation')}
+                className="inline-flex items-center gap-1 px-2.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-mono font-medium rounded-lg border border-amber-200 transition-all cursor-pointer"
+                title="Test Context-Aware Selection: Gateway Degradation → Delayed Retry"
+              >
+                <Clock className="w-3 h-3 text-amber-600" />
+                <span>Test Delayed Retry</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => launchRecoveryFlow('EXPIRED_PAYMENT_METHOD', 'Payment Instrument Expired')}
+                className="inline-flex items-center gap-1 px-2.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-mono font-medium rounded-lg border border-purple-200 transition-all cursor-pointer"
+                title="Test Context-Aware Selection: Expired Instrument → Update Method"
+              >
+                <CreditCard className="w-3 h-3 text-purple-600" />
+                <span>Test Method Update</span>
+              </button>
+            </div>
           ) : simState === 'step7_recovered' ? (
             <button
               id="run-another-simulation-btn"
@@ -974,53 +1206,53 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
       {/* ========================================================================= */}
       <div
         id="payment-context-bar"
-        className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm"
+        className="bg-[var(--bg-surface)] rounded-xl p-4 border border-[var(--border-app)] shadow-xs transition-colors"
       >
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 items-center text-xs">
           {/* Customer */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-            <span className="text-[10px] text-slate-400 font-mono block uppercase">Customer</span>
-            <span className="font-bold text-slate-900 truncate block mt-0.5">Amit Sharma</span>
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">Customer</span>
+            <span className="font-bold text-[var(--text-primary)] truncate block mt-0.5">Amit Sharma</span>
           </div>
 
           {/* Amount */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-            <span className="text-[10px] text-slate-400 font-mono block uppercase">Amount</span>
-            <span className="font-black text-slate-900 font-mono block mt-0.5">₹5,000</span>
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">Amount</span>
+            <span className="font-black text-[var(--text-primary)] font-mono block mt-0.5">₹5,000</span>
           </div>
 
           {/* Method */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-            <span className="text-[10px] text-slate-400 font-mono block uppercase">Method</span>
-            <span className="font-bold text-indigo-700 font-mono block mt-0.5">UPI (HDFC)</span>
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">Method</span>
+            <span className="font-bold text-indigo-600 dark:text-indigo-400 font-mono block mt-0.5">UPI (HDFC)</span>
           </div>
 
           {/* Payment */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-            <span className="text-[10px] text-slate-400 font-mono block uppercase">Payment</span>
-            <span className="font-mono text-slate-700 font-semibold block mt-0.5">
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">Payment</span>
+            <span className="font-mono text-[var(--text-secondary)] font-semibold block mt-0.5">
               {simState === 'idle' ? 'Ready' : 'pay_92831'}
             </span>
           </div>
 
           {/* Status */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-            <span className="text-[10px] text-slate-400 font-mono block uppercase">Status</span>
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">Status</span>
             <span className="block mt-0.5">
               {simState === 'idle' ? (
-                <span className="font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded font-mono text-[11px]">
+                <span className="font-bold text-[var(--text-secondary)] bg-[var(--bg-surface)] px-1.5 py-0.5 rounded font-mono text-[11px] border border-[var(--border-subtle)]">
                   WAITING FOR PAYMENT
                 </span>
               ) : simState === 'checkout_processing' ? (
-                <span className="font-bold text-indigo-600 flex items-center gap-1 animate-pulse font-mono text-[11px]">
+                <span className="font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1 animate-pulse font-mono text-[11px]">
                   <RefreshCw className="w-3 h-3 animate-spin" /> {checkoutStatusText}
                 </span>
               ) : simState === 'step7_recovered' ? (
-                <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-mono text-[11px]">
+                <span className="font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded font-mono text-[11px] border border-emerald-200 dark:border-emerald-800">
                   ✓ Recovered
                 </span>
               ) : (
-                <span className="font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded font-mono text-[11px]">
+                <span className="font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded font-mono text-[11px] border border-rose-200 dark:border-rose-800">
                   Payment Failed
                 </span>
               )}
@@ -1028,18 +1260,18 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
           </div>
 
           {/* Failure / Outcome */}
-          <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
+          <div className="p-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)] flex items-center justify-between">
             <div className="min-w-0">
-              <span className="text-[10px] text-slate-400 font-mono block uppercase">
+              <span className="text-[10px] text-[var(--text-muted)] font-mono block uppercase">
                 {simState === 'step7_recovered' ? 'Outcome' : 'Failure'}
               </span>
               <span className="font-bold truncate block mt-0.5">
                 {simState === 'step7_recovered' ? (
-                  <span className="text-emerald-700 font-mono">100% Captured</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-mono">100% Captured</span>
                 ) : simState !== 'idle' && simState !== 'checkout_processing' ? (
-                  <span className="text-red-700 font-mono">BANK_TIMEOUT</span>
+                  <span className="text-rose-600 dark:text-rose-400 font-mono">BANK_TIMEOUT</span>
                 ) : (
-                  <span className="text-slate-400 font-mono">—</span>
+                  <span className="text-[var(--text-muted)] font-mono">—</span>
                 )}
               </span>
             </div>
@@ -1066,20 +1298,20 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
         {/* ========================================================================= */}
         <div
           id="connected-7-step-pipeline"
-          className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden"
+          className="bg-[var(--bg-surface)] rounded-xl border border-[var(--border-app)] shadow-xs overflow-hidden transition-colors"
         >
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-50">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-subtle)]">
             <div className="flex items-center gap-3">
-              <h2 className="text-xs font-semibold text-gray-900 uppercase tracking-wider">Recovery Pipeline</h2>
-              <span className="text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-mono">7 stages</span>
+              <h2 className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">Recovery Pipeline</h2>
+              <span className="text-[10px] bg-[var(--bg-surface-elevated)] text-[var(--text-secondary)] px-2 py-0.5 rounded-full font-mono border border-[var(--border-subtle)]">7 stages</span>
             </div>
-            <div className="text-[10px] text-gray-400 font-mono">
+            <div className="text-[10px] text-[var(--text-muted)] font-mono">
               {simState === 'idle' ? (
-                <span className="text-gray-500">Standing by</span>
+                <span className="text-[var(--text-muted)]">Standing by</span>
               ) : inspectedStepOverride ? (
                 <button
                   onClick={() => setInspectedStepOverride(null)}
-                  className="text-blue-600 hover:underline font-semibold cursor-pointer"
+                  className="text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer"
                 >
                   ← Return to live step
                 </button>
@@ -1104,21 +1336,19 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                   <React.Fragment key={step.num}>
                     <div
                       onClick={() => setInspectedStepOverride(step.num)}
-                      className={`flex flex-col items-center gap-2 cursor-pointer group transition-all z-10 select-none ${
-                        isInspected ? 'scale-105' : ''
-                      }`}
+                      className={`flex flex-col items-center gap-2 cursor-pointer group transition-all z-10 select-none ${isInspected ? 'scale-105' : ''
+                        }`}
                     >
                       {/* Step circle */}
                       <div
-                        className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold transition-all ${
-                          isCompleted
-                            ? 'bg-emerald-500 text-white shadow-sm'
+                        className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold transition-all ${isCompleted
+                            ? 'bg-emerald-500 text-white shadow-xs'
                             : isActive
-                            ? 'bg-blue-600 text-white shadow-sm shadow-blue-200 ring-4 ring-blue-100'
-                            : isInspected
-                            ? 'bg-gray-800 text-white'
-                            : 'bg-gray-100 text-gray-400 border border-gray-200 group-hover:border-gray-300 group-hover:text-gray-600'
-                        }`}
+                              ? 'bg-blue-600 text-white shadow-xs ring-4 ring-blue-500/20'
+                              : isInspected
+                                ? 'bg-[var(--text-primary)] text-[var(--bg-surface)]'
+                                : 'bg-[var(--bg-surface-elevated)] text-[var(--text-muted)] border border-[var(--border-subtle)] group-hover:border-[var(--border-strong)] group-hover:text-[var(--text-primary)]'
+                          }`}
                       >
                         {isCompleted ? (
                           <Check className="w-4 h-4 stroke-[2.5]" />
@@ -1130,39 +1360,37 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                       </div>
 
                       <div className="text-center min-w-[72px]">
-                        <div className={`text-[11px] font-semibold whitespace-nowrap ${
-                          isActive ? 'text-blue-600'
-                          : isCompleted ? 'text-emerald-600'
-                          : isInspected ? 'text-gray-900'
-                          : 'text-gray-400 group-hover:text-gray-700'
-                        }`}>
+                        <div className={`text-[11px] font-semibold whitespace-nowrap ${isActive ? 'text-blue-600 dark:text-blue-400'
+                            : isCompleted ? 'text-emerald-600 dark:text-emerald-400'
+                              : isInspected ? 'text-[var(--text-primary)]'
+                                : 'text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
+                          }`}>
                           {step.name}
                         </div>
                         <div className="text-[9px] mt-0.5">
                           {isCompleted ? (
-                            <span className="text-emerald-500 font-semibold">Done</span>
+                            <span className="text-emerald-500 dark:text-emerald-400 font-semibold">Done</span>
                           ) : isActive ? (
-                            <span className="text-blue-500 font-semibold flex items-center justify-center gap-1">
+                            <span className="text-blue-500 dark:text-blue-400 font-semibold flex items-center justify-center gap-1">
                               <span className="w-1 h-1 rounded-full bg-blue-500 animate-ping inline-block" />
                               {statusLabel}
                             </span>
                           ) : (
-                            <span className="text-gray-300">{statusLabel}</span>
+                            <span className="text-[var(--text-muted)]">{statusLabel}</span>
                           )}
                         </div>
                       </div>
                     </div>
 
                     {isNext && (
-                      <div className="flex-1 mx-1 h-px bg-gray-200 relative mt-[18px]">
+                      <div className="flex-1 mx-1 h-px bg-[var(--border-app)] relative mt-[18px]">
                         <div
-                          className={`h-full transition-all duration-700 ${
-                            isStepCompleted(step.num + 1) || isStepActive(step.num + 1)
+                          className={`h-full transition-all duration-700 ${isStepCompleted(step.num + 1) || isStepActive(step.num + 1)
                               ? 'bg-emerald-400 w-full'
                               : isStepCompleted(step.num)
-                              ? 'bg-blue-300 w-1/2'
-                              : 'w-0'
-                          }`}
+                                ? 'bg-blue-400 w-1/2'
+                                : 'w-0'
+                            }`}
                         />
                       </div>
                     )}
@@ -1187,33 +1415,33 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
             >
               {/* Top Step Card Header */}
               <div>
-                <div className="flex items-center justify-between pb-4 border-b border-gray-100">
+                <div className="flex items-center justify-between pb-4 border-b border-[var(--border-subtle)]">
                   <div className="flex items-center gap-3">
                     <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-semibold text-xs flex items-center justify-center font-mono">
                       {simState === 'idle' ? '—' : `${displayedDetailStep}`}
                     </div>
                     <div>
-                      <span className="text-[10px] font-semibold uppercase tracking-widest text-blue-600">
-                        {simState === 'idle' ? 'System Ready' : `Step ${displayedDetailStep} of 7`}
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-blue-600 dark:text-blue-400">
+                        {simState === 'idle' ? 'System Ready' : `Stage 0${displayedDetailStep} of 07`}
                       </span>
-                      <h3 className="text-sm font-bold text-gray-900 tracking-tight">
+                      <h3 className="text-sm font-bold text-[var(--text-primary)] tracking-tight">
                         {simState === 'idle'
                           ? 'Waiting for Payment Transaction'
                           : simState === 'checkout_processing'
-                          ? 'Payment Ingest — Processing'
-                          : displayedDetailStep === 1
-                          ? 'Payment Failure Detected'
-                          : displayedDetailStep === 2
-                          ? 'AI Root Cause Diagnosis'
-                          : displayedDetailStep === 3
-                          ? 'Recovery Strategy Decision'
-                          : displayedDetailStep === 4
-                          ? 'Safety & Policy Check'
-                          : displayedDetailStep === 5
-                          ? 'WhatsApp Recovery — Customer Action'
-                          : displayedDetailStep === 6
-                          ? 'Payment Verification'
-                          : 'Revenue Recovered'}
+                            ? 'Payment Ingest — Processing'
+                            : displayedDetailStep === 1
+                              ? '01 Detection — Payment Failure Detected'
+                              : displayedDetailStep === 2
+                                ? '02 AI Diagnosis — Root Cause Analysis'
+                                : displayedDetailStep === 3
+                                  ? '03 Strategy Selection — Decision Center'
+                                  : displayedDetailStep === 4
+                                    ? '04 Policy Authorization — Guardrail Verification'
+                                    : displayedDetailStep === 5
+                                      ? `05 Execution — ${getSelectedStrategyLabel()}`
+                                      : displayedDetailStep === 6
+                                        ? '06 Verification — Payment & Signature'
+                                        : '07 Outcome — Revenue Recovery'}
                       </h3>
                     </div>
                   </div>
@@ -1222,7 +1450,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                     <button
                       id="open-drilldown-modal-btn"
                       onClick={() => setSelectedDrillDownStep(displayedDetailStep)}
-                      className="px-3 py-1.5 rounded-lg bg-gray-50 hover:bg-gray-100 text-gray-600 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer border border-gray-200"
+                      className="px-3 py-1.5 rounded-lg bg-[var(--bg-surface-elevated)] hover:bg-[var(--bg-surface-hover)] text-[var(--text-secondary)] text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer border border-[var(--border-app)]"
                     >
                       <span>Full Telemetry</span>
                       <ExternalLink className="w-3 h-3" />
@@ -1468,91 +1696,140 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                   )}
 
                   {/* ------------------------------------------------------------- */}
-                  {/* STEP 03 DETAIL: Recovery Decision */}
+                  {/* STEP 03 DETAIL: Strategy Selection (Centerpiece Decision Matrix) */}
                   {/* ------------------------------------------------------------- */}
                   {displayedDetailStep === 3 && (
                     <div className="space-y-4">
-                      <p className="text-xs text-slate-600">
-                        ReviveAI evaluated candidate interventions to maximize expected recovery yield:
-                      </p>
-
-                      {/* Candidate Strategies Grid */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                        <div className="p-3 rounded-xl bg-white border border-slate-200 text-slate-700 flex items-center justify-between">
-                          <div>
-                            <span className="font-bold text-slate-800 block">1. Retry Now</span>
-                            <span className="text-[10px] text-slate-400">Immediate re-execution</span>
-                          </div>
-                          <div className="text-right font-mono">
-                            <span className="font-bold text-slate-700 block">42%</span>
-                            <span className="text-[10px] text-slate-400">₹2,100</span>
-                          </div>
-                        </div>
-
-                        <div className="p-3 rounded-xl bg-white border border-slate-200 text-slate-700 flex items-center justify-between">
-                          <div>
-                            <span className="font-bold text-slate-800 block">2. Delayed Retry</span>
-                            <span className="text-[10px] text-slate-400">Auto-retry after 15m</span>
-                          </div>
-                          <div className="text-right font-mono">
-                            <span className="font-bold text-slate-700 block">81%</span>
-                            <span className="text-[10px] text-slate-400">₹4,050</span>
-                          </div>
-                        </div>
-
-                        {/* SELECTED STRATEGY (Visually Dominant) */}
-                        <div className="sm:col-span-2 p-4 rounded-xl bg-emerald-50 border-2 border-emerald-500 text-emerald-950 shadow-xs relative">
-                          <span className="text-[9px] font-black uppercase text-emerald-800 bg-emerald-200 px-2 py-0.5 rounded absolute top-2 right-2 font-mono">
-                            ✓ SELECTED
+                      {/* Centerpiece 1: Authoritative Decision Breakdown */}
+                      <div className="p-4 rounded-xl bg-slate-900 text-white border border-slate-800 space-y-3 text-xs shadow-md">
+                        <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                          <span className="font-mono text-[10px] uppercase font-bold text-indigo-400 flex items-center gap-1.5">
+                            <Zap className="w-3.5 h-3.5 text-indigo-400" />
+                            STRATEGY DECISION MATRIX · BOUNDED SELECTION
                           </span>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="flex items-center gap-1.5 font-black text-sm text-emerald-950">
-                                <span>📱</span>
-                                <span>3. WhatsApp Recovery</span>
-                              </div>
-                              <p className="text-xs text-emerald-800 mt-1 max-w-md">
-                                Interactive 1-click tokenized recovery message sent once bank degradation normalizes.
-                              </p>
-                            </div>
-                            <div className="text-right font-mono mr-16">
-                              <span className="text-lg font-black text-emerald-800 block">87%</span>
-                              <span className="text-xs font-bold text-emerald-700">₹4,350 Exp</span>
-                            </div>
-                          </div>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            AUTHORITATIVE VERDICT
+                          </span>
                         </div>
 
-                        <div className="p-3 rounded-xl bg-white border border-slate-200 text-slate-700 flex items-center justify-between">
-                          <div>
-                            <span className="font-bold text-slate-800 block">4. Email Recovery</span>
-                            <span className="text-[10px] text-slate-400">Standard inbox link</span>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-0.5 font-mono text-[11px]">
+                          {/* 1. AI Recommendation */}
+                          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60">
+                            <span className="text-[9px] text-slate-400 block uppercase font-mono">1. AI Recommendation</span>
+                            <span className="font-bold text-amber-400 truncate block mt-0.5" title={diagnosis?.recommendedActionLabel || getSelectedStrategyLabel()}>
+                              {diagnosis?.recommendedActionLabel || (selectedStrategy === 'smart_retry' ? 'Smart Immediate Retry' : 'WhatsApp 1-Click Link')}
+                            </span>
                           </div>
-                          <div className="text-right font-mono">
-                            <span className="font-bold text-slate-700 block">38%</span>
-                            <span className="text-[10px] text-slate-400">₹1,900</span>
-                          </div>
-                        </div>
 
-                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 flex items-center justify-between opacity-80">
-                          <div>
-                            <span className="font-bold text-slate-600 block">5. STOP (No Action)</span>
-                            <span className="text-[10px] text-slate-400">If prob &lt;30%</span>
+                          {/* 2. Ranking Score */}
+                          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60">
+                            <span className="text-[9px] text-slate-400 block uppercase font-mono">2. Ranking Score</span>
+                            <span className="font-bold text-emerald-400 truncate block mt-0.5 font-mono">
+                              {Math.round((diagnosis?.recoveryProbability ?? 0.87) * 100)}% Yield
+                            </span>
                           </div>
-                          <div className="text-right font-mono">
-                            <span className="font-bold text-slate-500 block">0%</span>
-                            <span className="text-[10px] text-slate-400">Preserve Rep</span>
+
+                          {/* 3. Policy Verdict */}
+                          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60">
+                            <span className="text-[9px] text-slate-400 block uppercase font-mono">3. Policy Verdict</span>
+                            <span className="font-bold text-blue-400 truncate block mt-0.5">
+                              {verdictClean || (policy?.isApproved ? 'APPROVED' : policy?.isStopped ? 'STOPPED' : 'REVIEW')}
+                            </span>
+                          </div>
+
+                          {/* 4. Authorized Execution */}
+                          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-emerald-500/50">
+                            <span className="text-[9px] text-emerald-400 block uppercase font-mono">4. Authorized Strategy</span>
+                            <span className="font-bold text-emerald-300 truncate block mt-0.5">
+                              {getSelectedStrategyLabel()}
+                            </span>
                           </div>
                         </div>
                       </div>
 
-                      <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-200 text-xs text-indigo-950">
-                        <span className="font-bold font-mono text-[10px] text-indigo-700 uppercase block">
-                          Strategic Rationale:
-                        </span>
-                        <p className="text-slate-700 mt-0.5">
-                          WhatsApp delivers the highest expected yield (₹4,350) by giving the customer immediate 1-click payment completion without manual re-entry.
+                      {/* Centerpiece 2: Why This Strategy Was Selected (Selection Rationale) */}
+                      <div className="p-3.5 rounded-xl bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/50 text-xs">
+                        <div className="flex items-center justify-between pb-1.5 border-b border-indigo-100 dark:border-indigo-900/40">
+                          <span className="font-bold font-mono text-[10px] text-indigo-700 dark:text-indigo-400 uppercase flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                            Why This Strategy Was Selected
+                          </span>
+                          <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400 bg-white/70 dark:bg-indigo-900/50 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-700">
+                            {diagnosis?.rootCauseLabel || 'Temporary Bank Degradation (504)'} · {Math.round((diagnosis?.confidence ?? 0.94) * 100)}% Conf.
+                          </span>
+                        </div>
+                        <p className="text-[var(--text-secondary)] mt-1.5 leading-relaxed">
+                          {diagnosis?.reason || 'Context-aware scoring selected the highest yield bounded strategy compatible with the failure root cause.'}
                         </p>
                       </div>
+
+                      {/* Centerpiece 3: Alternatives Considered & Evaluated */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between px-1">
+                          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-[var(--text-muted)]">
+                            Alternatives Considered &amp; Evaluated ({getInterventionCandidates().length} Candidates)
+                          </span>
+                          <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                            Ranked by yield &amp; guardrails
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                          {getInterventionCandidates().map((cand, idx) => {
+                            const CandIcon = getCandidateIcon(cand.id);
+                            const isChosen = cand.id === selectedStrategy || (cand.isRecommended && selectedStrategy === cand.id);
+
+                            return (
+                              <div
+                                key={cand.id}
+                                className={`p-3.5 rounded-xl border transition-all ${
+                                  isChosen
+                                    ? 'sm:col-span-2 bg-emerald-50/70 dark:bg-emerald-950/20 border-2 border-emerald-500 text-[var(--text-primary)] shadow-xs relative'
+                                    : 'bg-[var(--bg-surface)] border-[var(--border-app)] text-[var(--text-secondary)]'
+                                }`}
+                              >
+                                {isChosen && (
+                                  <span className="text-[9px] font-black uppercase text-emerald-800 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-700 px-2 py-0.5 rounded absolute top-2 right-2 font-mono flex items-center gap-1">
+                                    <Check className="w-3 h-3 stroke-[3]" />
+                                    SELECTED &amp; AUTHORIZED
+                                  </span>
+                                )}
+
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 font-bold text-[var(--text-primary)]">
+                                      <CandIcon className={`w-4 h-4 shrink-0 ${isChosen ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-500'}`} />
+                                      <span className="truncate">{idx + 1}. {cand.name}</span>
+                                      <span className="text-[9px] font-mono font-normal text-[var(--text-muted)] bg-[var(--bg-surface-elevated)] px-1.5 py-0.5 rounded border border-[var(--border-subtle)]">
+                                        {cand.channel}
+                                      </span>
+                                    </div>
+                                    <span className="text-[11px] text-[var(--text-secondary)] block mt-1 leading-relaxed">
+                                      {cand.notes}
+                                    </span>
+                                  </div>
+
+                                  <div className="text-right font-mono shrink-0 pt-0.5">
+                                    <span className={`font-bold block text-xs ${isChosen ? 'text-emerald-700 dark:text-emerald-400' : 'text-[var(--text-primary)]'}`}>
+                                      {Math.round(cand.probability * 100)}%
+                                    </span>
+                                    <span className="text-[10px] text-[var(--text-muted)] block">
+                                      ₹{cand.expectedValue.toLocaleString('en-IN')}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Layer 3: Context-Aware Deep Explainability Intelligence */}
+                      <WhyThisActionCard
+                        caseId={recoveryCaseId || 'REC-92831'}
+                        onOpenFullModal={() => setWhyThisActionModalOpen(true)}
+                        className="mt-2"
+                      />
                     </div>
                   )}
 
@@ -1572,6 +1849,13 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                         </p>
                       </div>
 
+                      {/* Layer 3: Context-Aware Explainability */}
+                      <WhyThisActionCard
+                        caseId={recoveryCaseId || 'REC-92831'}
+                        onOpenFullModal={() => setWhyThisActionModalOpen(true)}
+                        className="mt-2"
+                      />
+
                       {/* Active Merchant Guardrails context (live config) */}
                       <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-100 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-blue-800">
                         <span className="font-bold uppercase tracking-wider text-indigo-700">Active Guardrails</span>
@@ -1590,11 +1874,10 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                           step4Checks.map((chk, i) => (
                             <div
                               key={`p4chk-${i}`}
-                              className={`p-2.5 rounded-xl border flex items-center justify-between ${
-                                chk.passed
+                              className={`p-2.5 rounded-xl border flex items-center justify-between ${chk.passed
                                   ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                                   : 'bg-amber-50 border-amber-200 text-amber-900'
-                              }`}
+                                }`}
                             >
                               <div className="flex items-center gap-2 font-medium">
                                 {chk.passed ? (
@@ -1605,11 +1888,10 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                                 <span>{chk.detail || chk.name}</span>
                               </div>
                               <span
-                                className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                                  chk.passed
+                                className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${chk.passed
                                     ? 'text-emerald-700 bg-emerald-100'
                                     : 'text-amber-700 bg-amber-100'
-                                }`}
+                                  }`}
                               >
                                 {chk.passed ? 'PASSED' : 'REVIEW'}
                               </span>
@@ -1625,23 +1907,21 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                       {/* Result Banner — prefers the authoritative backend verdict once synced */}
                       {verdictClean && (
                         <div
-                          className={`p-3 rounded-xl border flex items-center justify-between ${
-                            verdictTone === 'ok'
+                          className={`p-3 rounded-xl border flex items-center justify-between ${verdictTone === 'ok'
                               ? 'bg-emerald-100 border-emerald-300 text-emerald-950'
                               : verdictTone === 'stop'
-                              ? 'bg-rose-100 border-rose-300 text-rose-950'
-                              : 'bg-amber-100 border-amber-300 text-amber-950'
-                          }`}
+                                ? 'bg-rose-100 border-rose-300 text-rose-950'
+                                : 'bg-amber-100 border-amber-300 text-amber-950'
+                            }`}
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <span
-                              className={`w-2.5 h-2.5 rounded-full shrink-0 animate-pulse ${
-                                verdictTone === 'ok'
+                              className={`w-2.5 h-2.5 rounded-full shrink-0 animate-pulse ${verdictTone === 'ok'
                                   ? 'bg-emerald-600'
                                   : verdictTone === 'stop'
-                                  ? 'bg-rose-600'
-                                  : 'bg-amber-600'
-                              }`}
+                                    ? 'bg-rose-600'
+                                    : 'bg-amber-600'
+                                }`}
                             />
                             <span
                               className="text-xs font-black uppercase tracking-wider font-mono truncate"
@@ -1663,146 +1943,333 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                   )}
 
                   {/* ------------------------------------------------------------- */}
-                  {/* STEP 05 DETAIL: WhatsApp Recovery (Smartphone Frame Sandbox) */}
+                  {/* STEP 05 DETAIL: Execute [SELECTED STRATEGY] */}
                   {/* ------------------------------------------------------------- */}
                   {displayedDetailStep === 5 && (
                     <div className="space-y-4">
-                      {/* Realistic Smartphone-Style Frame Inside Detail Panel */}
-                      <div className="rounded-2xl border border-slate-300 overflow-hidden shadow-md max-w-lg mx-auto">
-                        {/* WhatsApp Business Header */}
-                        <div className="bg-[#075E54] text-white px-4 py-3 flex items-center justify-between shadow-xs">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs shrink-0 ring-1 ring-white/50">
-                              RA
+                      {selectedStrategy === 'smart_retry' ? (
+                        /* Smart Retry Route Switcher Card */
+                        <div className="rounded-2xl border border-blue-200 bg-white overflow-hidden shadow-sm max-w-lg mx-auto">
+                          <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <RotateCcw className="w-4 h-4 text-white" />
+                              <span className="text-xs font-bold font-mono">Smart Immediate Gateway Retry</span>
                             </div>
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-bold tracking-tight">ReviveAI</span>
-                                <span className="w-3.5 h-3.5 rounded-full bg-emerald-400 text-white flex items-center justify-center text-[9px] font-bold">
-                                  ✓
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
+                              TEST_MODE / SIMULATED
+                            </span>
+                          </div>
+                          <div className="p-5 space-y-4 bg-slate-50">
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Primary Acquiring Node:</span>
+                                <span className="text-rose-600 font-mono font-bold text-[11px] flex items-center gap-1">
+                                  ⚠️ HDFC Node (Degraded 69%)
                                 </span>
                               </div>
-                              <span className="text-[10px] text-emerald-100/90 font-mono block">
-                                Verified Business (+91 98765 43210)
+                              <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Alternate Route Selected:</span>
+                                <span className="text-emerald-700 font-mono font-bold text-[11px] flex items-center gap-1">
+                                  🟢 ICICI Backup Acquiring Route (99.4% SLA)
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5 text-xs">
+                              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold block">
+                                Idempotent Execution Parameters:
                               </span>
+                              <div className="font-mono text-[11px] text-slate-700 space-y-1">
+                                <div>Idempotency Key: <span className="text-indigo-600 font-bold">act_92831_smart_retry_1</span></div>
+                                <div>Target Order: <span className="text-slate-900 font-bold">#ORD-92831 (₹5,000)</span></div>
+                                <div>Customer Friction: <span className="text-emerald-700 font-bold">Zero (Autonomous Reroute)</span></div>
+                              </div>
+                            </div>
+
+                            <div className="pt-1">
+                              {simState === 'step5_retry_executing' ? (
+                                <div className="w-full py-2.5 px-4 bg-blue-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse">
+                                  <RefreshCw className="w-4 h-4 animate-spin" />
+                                  <span>Rerouting and re-executing retry via alternate node...</span>
+                                </div>
+                              ) : simState === 'step5_retry_executed' || isStepCompleted(5) ? (
+                                <div className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm">
+                                  <Check className="w-4 h-4 stroke-[3]" />
+                                  <span>✓ Smart Retry Executed & Captured (₹5,000)</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => completeVerificationAndRecovery(execIdRef.current || `run-${Date.now()}`, 'smart_retry')}
+                                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+                                >
+                                  <RotateCcw className="w-4 h-4" />
+                                  <span>Execute Smart Retry [TEST_MODE]</span>
+                                </button>
+                              )}
                             </div>
                           </div>
-
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
-                            WhatsApp Sandbox
-                          </span>
                         </div>
-
-                        {/* Chat Body */}
-                        <div className="p-4 space-y-3 bg-[#EFEAE2] bg-[radial-gradient(#d1d7db_1px,transparent_1px)] [background-size:16px_16px] min-h-[260px] flex flex-col justify-between">
-                          <div className="space-y-2.5">
-                            {/* Encryption Notice */}
-                            <div className="text-center">
-                              <span className="inline-block text-[10px] bg-[#FFEECD] text-amber-900/80 px-3 py-0.5 rounded-md shadow-2xs font-medium">
-                                🔒 Messages are end-to-end encrypted.
-                              </span>
+                      ) : selectedStrategy === 'delayed_retry' ? (
+                        /* Delayed Retry Cooldown Card */
+                        <div className="rounded-2xl border border-amber-200 bg-white overflow-hidden shadow-sm max-w-lg mx-auto">
+                          <div className="bg-amber-600 text-white px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Clock className="w-4 h-4 text-white" />
+                              <span className="text-xs font-bold font-mono">Delayed Intelligent Retry</span>
                             </div>
-
-                            {/* Message Date */}
-                            <div className="text-center">
-                              <span className="text-[9px] uppercase font-bold text-slate-500 bg-white/80 px-2 py-0.5 rounded shadow-2xs">
-                                Today
-                              </span>
-                            </div>
-
-                            {/* Preparing Indicator */}
-                            {simState === 'step5_whatsapp_prep' && (
-                              <div className="bg-white/90 p-3 rounded-xl shadow-xs text-xs text-slate-600 flex items-center gap-2 animate-pulse">
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-                                <span>Preparing recovery message with 1-click token...</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
+                              TEST_MODE / SIMULATED
+                            </span>
+                          </div>
+                          <div className="p-5 space-y-4 bg-slate-50">
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Cooldown Queue:</span>
+                                <span className="text-amber-700 font-mono font-bold text-[11px]">Enqueued (15m Cooldown Window)</span>
                               </div>
-                            )}
+                              <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Acquiring Cluster Health:</span>
+                                <span className="text-slate-700 font-mono text-[11px]">Normalizing from 69% → 94%</span>
+                              </div>
+                            </div>
 
-                            {/* WhatsApp Message Bubble */}
-                            {simState !== 'step5_whatsapp_prep' && (
-                              <div className="bg-white rounded-xl rounded-tl-none p-3.5 shadow-sm border border-slate-200/60 space-y-2 relative animate-fadeIn">
-                                <p className="text-xs font-semibold text-slate-900">
-                                  Hi Amit 👋
-                                </p>
-                                <p className="text-xs text-slate-700 leading-relaxed">
-                                  Your <span className="font-bold text-slate-900">₹5,000</span> payment couldn't be completed because of a temporary bank issue.
-                                </p>
-                                <p className="text-xs text-slate-700 leading-relaxed">
-                                  The issue has now been resolved.
-                                </p>
-                                <p className="text-xs text-slate-700 leading-relaxed">
-                                  You can safely complete your payment below:
-                                </p>
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5 text-xs">
+                              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold block">
+                                Enqueued Parameters:
+                              </span>
+                              <div className="font-mono text-[11px] text-slate-700 space-y-1">
+                                <div>Queue Position: <span className="text-indigo-600 font-bold">#1 in Priority Cooldown Queue</span></div>
+                                <div>Execution Condition: <span className="text-slate-900 font-bold">Issuer health &gt; 85%</span></div>
+                              </div>
+                            </div>
 
-                                {/* Item card embedded in WhatsApp message */}
-                                <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between">
-                                  <div>
-                                    <div className="font-bold text-slate-900 text-[11px]">Wireless Headphones</div>
-                                    <div className="text-[10px] text-slate-500 font-mono">Order #ORD-92831</div>
-                                  </div>
-                                  <div className="font-black text-slate-900 font-mono text-sm">
-                                    ₹5,000
-                                  </div>
+                            <div className="pt-1">
+                              {simState === 'step5_delayed_executing' ? (
+                                <div className="w-full py-2.5 px-4 bg-amber-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse">
+                                  <RefreshCw className="w-4 h-4 animate-spin" />
+                                  <span>Executing delayed retry attempt...</span>
                                 </div>
+                              ) : simState === 'step5_delayed_queued' || isStepCompleted(5) ? (
+                                <div className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm">
+                                  <Check className="w-4 h-4 stroke-[3]" />
+                                  <span>✓ Delayed Retry Settled (₹5,000)</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => completeVerificationAndRecovery(execIdRef.current || `run-${Date.now()}`, 'delayed_retry')}
+                                  className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+                                >
+                                  <Clock className="w-4 h-4" />
+                                  <span>Fast-Forward Cooldown & Execute [TEST_MODE]</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : selectedStrategy === 'update_payment_method' ? (
+                        /* Payment Method Switcher Card */
+                        <div className="rounded-2xl border border-purple-200 bg-white overflow-hidden shadow-sm max-w-lg mx-auto">
+                          <div className="bg-purple-600 text-white px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <CreditCard className="w-4 h-4 text-white" />
+                              <span className="text-xs font-bold font-mono">Payment Method Update</span>
+                            </div>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
+                              TEST_MODE / SIMULATED
+                            </span>
+                          </div>
+                          <div className="p-5 space-y-4 bg-slate-50">
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Declined Instrument:</span>
+                                <span className="text-rose-600 font-mono font-bold text-[11px]">HDFC Debit Card •••• 4242 (Expired)</span>
+                              </div>
+                              <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
+                                <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Updated Instrument:</span>
+                                <span className="text-emerald-700 font-mono font-bold text-[11px]">amit@okhdfcbank (UPI Mandate)</span>
+                              </div>
+                            </div>
 
-                                {/* INTERACTIVE PAY BUTTON INSIDE WHATSAPP */}
-                                <div className="pt-1">
-                                  {simState === 'step5_customer_paying' ? (
-                                    <button
-                                      disabled
-                                      className="w-full py-2.5 px-4 bg-indigo-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse cursor-wait"
-                                    >
-                                      <RefreshCw className="w-4 h-4 animate-spin" />
-                                      <span>Processing payment...</span>
-                                    </button>
-                                  ) : simState === 'step5_customer_paid' || isStepCompleted(5) ? (
-                                    <div className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm">
-                                      <Check className="w-4 h-4 stroke-[3]" />
-                                      <span>✓ Payment successful (₹5,000)</span>
+                            <div className="pt-1">
+                              {simState === 'step5_method_updated' || isStepCompleted(5) ? (
+                                <div className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm">
+                                  <Check className="w-4 h-4 stroke-[3]" />
+                                  <span>✓ Payment Method Updated & Captured (₹5,000)</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => completeVerificationAndRecovery(execIdRef.current || `run-${Date.now()}`, 'update_payment_method')}
+                                  className="w-full py-2.5 px-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+                                >
+                                  <CreditCard className="w-4 h-4" />
+                                  <span>Simulate Method Switch & Authorize [TEST_MODE]</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : selectedStrategy === 'human_review' || selectedStrategy === 'stop' ? (
+                        /* Human Review / Stop Guardrail Card */
+                        <div className="rounded-2xl border border-rose-200 bg-white overflow-hidden shadow-sm max-w-lg mx-auto">
+                          <div className="bg-rose-600 text-white px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <ShieldAlert className="w-4 h-4 text-white" />
+                              <span className="text-xs font-bold font-mono">Operations Escalation Desk</span>
+                            </div>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
+                              GUARDRAIL STOPPED
+                            </span>
+                          </div>
+                          <div className="p-5 space-y-3 bg-slate-50 text-xs text-slate-700">
+                            <p className="font-semibold text-rose-900">
+                              Automated recovery execution prevented by deterministic safety guardrail.
+                            </p>
+                            <p className="text-slate-600">
+                              Reason: Maximum retry budget exhausted or recovery confidence below minimum merchant threshold.
+                            </p>
+                            <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 font-mono text-[11px]">
+                              Status: Queued for merchant human review (Zero customer fatigue)
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        /* WhatsApp Smartphone Frame Sandbox (Standard ₹5,000 Interactive Demo) */
+                        <div className="rounded-2xl border border-slate-300 overflow-hidden shadow-md max-w-lg mx-auto">
+                          {/* WhatsApp Business Header */}
+                          <div className="bg-[#075E54] text-white px-4 py-3 flex items-center justify-between shadow-xs">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs shrink-0 ring-1 ring-white/50">
+                                RA
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-bold tracking-tight">ReviveAI</span>
+                                  <span className="w-3.5 h-3.5 rounded-full bg-emerald-400 text-white flex items-center justify-center text-[9px] font-bold">
+                                    ✓
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-emerald-100/90 font-mono block">
+                                  Verified Business (+91 98765 43210)
+                                </span>
+                              </div>
+                            </div>
+
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono font-bold">
+                              WhatsApp Sandbox
+                            </span>
+                          </div>
+
+                          {/* Chat Body */}
+                          <div className="p-4 space-y-3 bg-[#EFEAE2] bg-[radial-gradient(#d1d7db_1px,transparent_1px)] [background-size:16px_16px] min-h-[260px] flex flex-col justify-between">
+                            <div className="space-y-2.5">
+                              {/* Encryption Notice */}
+                              <div className="text-center">
+                                <span className="inline-block text-[10px] bg-[#FFEECD] text-amber-900/80 px-3 py-0.5 rounded-md shadow-2xs font-medium">
+                                  🔒 Messages are end-to-end encrypted.
+                                </span>
+                              </div>
+
+                              {/* Message Date */}
+                              <div className="text-center">
+                                <span className="text-[9px] uppercase font-bold text-slate-500 bg-white/80 px-2 py-0.5 rounded shadow-2xs">
+                                  Today
+                                </span>
+                              </div>
+
+                              {/* Preparing Indicator */}
+                              {simState === 'step5_whatsapp_prep' && (
+                                <div className="bg-white/90 p-3 rounded-xl shadow-xs text-xs text-slate-600 flex items-center gap-2 animate-pulse">
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                                  <span>Preparing recovery message with 1-click token...</span>
+                                </div>
+                              )}
+
+                              {/* WhatsApp Message Bubble */}
+                              {simState !== 'step5_whatsapp_prep' && (
+                                <div className="bg-white rounded-xl rounded-tl-none p-3.5 shadow-sm border border-slate-200/60 space-y-2 relative animate-fadeIn">
+                                  <p className="text-xs font-semibold text-slate-900">
+                                    Hi Amit 👋
+                                  </p>
+                                  <p className="text-xs text-slate-700 leading-relaxed">
+                                    Your <span className="font-bold text-slate-900">₹5,000</span> payment couldn't be completed because of a temporary bank issue.
+                                  </p>
+                                  <p className="text-xs text-slate-700 leading-relaxed">
+                                    The issue has now been resolved.
+                                  </p>
+                                  <p className="text-xs text-slate-700 leading-relaxed">
+                                    You can safely complete your payment below:
+                                  </p>
+
+                                  {/* Item card embedded in WhatsApp message */}
+                                  <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between">
+                                    <div>
+                                      <div className="font-bold text-slate-900 text-[11px]">Wireless Headphones</div>
+                                      <div className="text-[10px] text-slate-500 font-mono">Order #ORD-92831</div>
                                     </div>
-                                  ) : (
-                                    <button
-                                      id="whatsapp-pay-button"
-                                      onClick={handleCustomerPayViaWhatsApp}
-                                      className="w-full py-2.5 px-4 bg-[#25D366] hover:bg-[#20bd5a] active:scale-[0.98] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition-all cursor-pointer ring-2 ring-emerald-500/30"
-                                    >
-                                      <CreditCard className="w-4 h-4" />
-                                      <span>Pay ₹5,000</span>
-                                    </button>
-                                  )}
-                                </div>
+                                    <div className="font-black text-slate-900 font-mono text-sm">
+                                      ₹5,000
+                                    </div>
+                                  </div>
 
-                                {/* Message Timestamp & Status Ticks */}
-                                <div className="flex items-center justify-end gap-1 text-[10px] text-slate-400 font-mono pt-1">
-                                  <span>{getNowTime().slice(0, 5)}</span>
-                                  {simState === 'step5_whatsapp_approved' ? (
-                                    <span className="text-slate-400">🕒</span>
-                                  ) : simState === 'step5_whatsapp_sent' ? (
-                                    <span className="text-slate-400 text-[10px]">✓ Sent</span>
-                                  ) : simState === 'step5_whatsapp_delivered' ? (
-                                    <span className="text-slate-500 text-[10px] flex items-center gap-0.5">
-                                      <CheckCheck className="w-3.5 h-3.5 text-slate-500" />
-                                      <span>Delivered</span>
-                                    </span>
-                                  ) : (
-                                    <span className="text-[#53bdeb] text-[10px] font-bold flex items-center gap-0.5">
-                                      <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" />
-                                      <span>Read</span>
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            )}
+                                  {/* INTERACTIVE PAY BUTTON INSIDE WHATSAPP */}
+                                  <div className="pt-1">
+                                    {simState === 'step5_customer_paying' ? (
+                                      <button
+                                        disabled
+                                        className="w-full py-2.5 px-4 bg-indigo-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse cursor-wait"
+                                      >
+                                        <RefreshCw className="w-4 h-4 animate-spin" />
+                                        <span>Processing payment...</span>
+                                      </button>
+                                    ) : simState === 'step5_customer_paid' || isStepCompleted(5) ? (
+                                      <div className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm">
+                                        <Check className="w-4 h-4 stroke-[3]" />
+                                        <span>✓ Payment successful (₹5,000)</span>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        id="whatsapp-pay-button"
+                                        onClick={handleCustomerPayViaWhatsApp}
+                                        className="w-full py-2.5 px-4 bg-[#25D366] hover:bg-[#20bd5a] active:scale-[0.98] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition-all cursor-pointer ring-2 ring-emerald-500/30"
+                                      >
+                                        <CreditCard className="w-4 h-4" />
+                                        <span>Pay ₹5,000</span>
+                                      </button>
+                                    )}
+                                  </div>
 
-                            {/* Interactive prompt hint */}
-                            {simState === 'step5_whatsapp_read' && (
-                              <div className="p-2 rounded-lg bg-emerald-100 border border-emerald-300 text-[11px] text-emerald-950 font-medium text-center shadow-xs">
-                                👆 Click the green <strong>"Pay ₹5,000"</strong> button above to complete recovery.
-                              </div>
-                            )}
+                                  {/* Message Timestamp & Status Ticks */}
+                                  <div className="flex items-center justify-end gap-1 text-[10px] text-slate-400 font-mono pt-1">
+                                    <span>{getNowTime().slice(0, 5)}</span>
+                                    {simState === 'step5_whatsapp_approved' ? (
+                                      <span className="text-slate-400">🕒</span>
+                                    ) : simState === 'step5_whatsapp_sent' ? (
+                                      <span className="text-slate-400 text-[10px]">✓ Sent</span>
+                                    ) : simState === 'step5_whatsapp_delivered' ? (
+                                      <span className="text-slate-500 text-[10px] flex items-center gap-0.5">
+                                        <CheckCheck className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>Delivered</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[#53bdeb] text-[10px] font-bold flex items-center gap-0.5">
+                                        <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" />
+                                        <span>Read</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Interactive prompt hint */}
+                              {simState === 'step5_whatsapp_read' && (
+                                <div className="p-2 rounded-lg bg-emerald-100 border border-emerald-300 text-[11px] text-emerald-950 font-medium text-center shadow-xs">
+                                  👆 Click the green <strong>"Pay ₹5,000"</strong> button above to complete recovery.
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
 
@@ -1877,51 +2344,131 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                   {/* ------------------------------------------------------------- */}
                   {displayedDetailStep === 7 && (
                     <div className="space-y-4">
-                      {/* Final Success State Card */}
-                      <div className="p-6 rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 text-white shadow-lg space-y-4">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-mono font-bold uppercase tracking-widest text-emerald-200">
-                            ✓ RECOVERY COMPLETE
-                          </span>
-                          <span className="text-xs font-black bg-white/20 text-white px-2.5 py-1 rounded-full font-mono">
-                            STATUS: SUCCESS
-                          </span>
-                        </div>
+                      {simState === 'step7_recovered' ? (
+                        <>
+                          {/* Polished Hero Success State Card */}
+                          <div className="p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 text-white shadow-lg space-y-4 relative overflow-hidden border border-emerald-500/40">
+                            <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-emerald-500/40">
+                              <div className="flex items-center gap-2">
+                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-pulse" />
+                                <span className="text-xs font-mono font-black uppercase tracking-widest text-emerald-100">
+                                  VERIFIED RECOVERY
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-mono font-bold bg-amber-400/20 text-amber-200 border border-amber-400/40 px-2.5 py-0.5 rounded-full">
+                                  Razorpay Test Mode
+                                </span>
+                                <span className="text-[10px] font-mono font-bold bg-white/20 text-white px-2.5 py-0.5 rounded-full">
+                                  STATUS: SUCCESS
+                                </span>
+                              </div>
+                            </div>
 
-                        <div className="flex items-baseline gap-3">
-                          <span className="text-3xl font-black font-mono tracking-tight text-white">
-                            ₹5,000
-                          </span>
-                          <span className="text-sm font-bold uppercase tracking-widest text-emerald-200">
-                            RECOVERED
-                          </span>
-                        </div>
+                            <div className="py-1">
+                              <div className="text-[10px] font-mono uppercase tracking-wider text-emerald-200 mb-0.5">
+                                Confirmed Settled Revenue
+                              </div>
+                              <div className="flex items-baseline gap-3">
+                                <span className="text-4xl font-black font-mono tracking-tight text-white">
+                                  ₹5,000
+                                </span>
+                                <span className="text-xs font-bold font-mono px-2 py-0.5 rounded bg-emerald-500/30 text-emerald-100 border border-emerald-400/30">
+                                  100% RECOVERED
+                                </span>
+                              </div>
+                            </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 border-t border-emerald-500/50 text-xs">
-                          <div>
-                            <span className="text-emerald-200 text-[10px] block">Recovery Method:</span>
-                            <span className="font-bold text-white">WhatsApp</span>
-                          </div>
-                          <div>
-                            <span className="text-emerald-200 text-[10px] block">Recovery Time:</span>
-                            <span className="font-bold text-white font-mono">10m 04s</span>
-                          </div>
-                          <div>
-                            <span className="text-emerald-200 text-[10px] block">Verification:</span>
-                            <span className="font-bold text-white font-mono">Payment Verified</span>
-                          </div>
-                        </div>
-                      </div>
+                            {/* Three Verified Badges */}
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 py-2">
+                              <div className="p-3 rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 flex items-center gap-2.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                                <div>
+                                  <span className="text-xs font-bold text-white block">Payment Verified</span>
+                                  <span className="text-[10px] text-emerald-200 font-mono block">Webhook captured</span>
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 flex items-center gap-2.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                                <div>
+                                  <span className="text-xs font-bold text-white block">Amount Matched</span>
+                                  <span className="text-[10px] text-emerald-200 font-mono block">₹5,000 == ₹5,000</span>
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 flex items-center gap-2.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                                <div>
+                                  <span className="text-xs font-bold text-white block">Signature Verified</span>
+                                  <span className="text-[10px] text-emerald-200 font-mono block">HMAC SHA256</span>
+                                </div>
+                              </div>
+                            </div>
 
-                      {/* Settlement Confirmation */}
-                      <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs text-slate-700">
-                        <div className="font-bold text-slate-900 uppercase font-mono text-[10px]">
-                          Merchant Ledger Status
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-emerald-500/50 text-xs font-mono">
+                              <div>
+                                <span className="text-emerald-200 text-[10px] block">Recovery Method:</span>
+                                <span className="font-bold text-white mt-0.5 block">{getSelectedStrategyLabel()}</span>
+                              </div>
+                              <div>
+                                <span className="text-emerald-200 text-[10px] block">Recovery Time:</span>
+                                <span className="font-bold text-white mt-0.5 block">10m 04s</span>
+                              </div>
+                              <div>
+                                <span className="text-emerald-200 text-[10px] block">Verification:</span>
+                                <span className="font-bold text-white mt-0.5 block">HMAC Confirmed</span>
+                              </div>
+                              <div>
+                                <span className="text-emerald-200 text-[10px] block">Environment:</span>
+                                <span className="font-bold text-amber-200 mt-0.5 block">Test Mode</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Settlement Confirmation */}
+                          <div className="p-3.5 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-app)] space-y-1.5 text-xs text-[var(--text-secondary)]">
+                            <div className="flex items-center justify-between">
+                              <div className="font-bold text-[var(--text-primary)] uppercase font-mono text-[10px] flex items-center gap-1.5">
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                                Merchant Ledger Status
+                              </div>
+                              <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                SETTLED
+                              </span>
+                            </div>
+                            <p className="leading-relaxed">
+                              ✓ ₹5,000 has been credited to merchant settlement balance. Customer order #ORD-92831 is marked <strong>FULFILLED</strong> and dispatched to delivery queue.
+                            </p>
+                          </div>
+                        </>
+                      ) : (
+                        /* Verification Pending State (Strict requirement: show success only when verified) */
+                        <div className="p-5 rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-app)] space-y-4">
+                          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-app)]">
+                            <div className="flex items-center gap-2">
+                              <Clock className="w-4 h-4 text-amber-500" />
+                              <span className="text-xs font-bold text-[var(--text-primary)] font-mono uppercase">
+                                AWAITING PAYMENT VERIFICATION
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-mono font-bold bg-amber-400/10 text-amber-600 dark:text-amber-400 border border-amber-400/20 px-2.5 py-0.5 rounded-full">
+                              Razorpay Test Mode
+                            </span>
+                          </div>
+                          <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                            ReviveAI strictly enforces deterministic verification: cryptographic webhook validation, exact amount matching (₹5,000), and SHA256 signature verification must confirm before marking revenue as recovered.
+                          </p>
+                          <div className="p-3 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-app)] flex items-center justify-between text-xs font-mono">
+                            <span className="text-[11px] text-[var(--text-muted)]">Current Execution Stage:</span>
+                            <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400">
+                              {simState === 'idle'
+                                ? 'Awaiting Payment Failure Event'
+                                : simState === 'step6_verification'
+                                  ? 'Cryptographic Webhook Verification in Progress'
+                                  : `Stage ${currentStep}: ${pipelineSteps[currentStep - 1]?.name || 'In Progress'}`}
+                            </span>
+                          </div>
                         </div>
-                        <p className="leading-relaxed">
-                          ✓ ₹5,000 has been credited to merchant settlement balance. Customer order #ORD-92831 is marked <strong>FULFILLED</strong> and dispatched to delivery queue.
-                        </p>
-                      </div>
+                      )}
 
                       {/* Action buttons */}
                       <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
@@ -1936,7 +2483,7 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
                         </button>
                         <button
                           onClick={handleReset}
-                          className="py-2.5 px-4 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold font-mono flex items-center justify-center gap-2 transition-all cursor-pointer"
+                          className="py-2.5 px-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-bold font-mono flex items-center justify-center gap-2 transition-all cursor-pointer"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
                           <span>Run Another Simulation</span>
@@ -1967,23 +2514,23 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
           {/* RIGHT COLUMN: STICKY LIVE AGENT ACTIVITY PANEL (5 Cols) */}
           {/* ========================================================================= */}
           <div className="lg:col-span-5 space-y-4 sticky top-6">
-            {/* LIVE AGENT ACTIVITY — Premium light timeline */}
+            {/* LIVE AGENT ACTIVITY — Premium timeline */}
             <div
               id="live-agent-activity-panel"
-              className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col min-h-[460px]"
+              className="bg-[var(--bg-surface)] rounded-xl border border-[var(--border-app)] shadow-xs flex flex-col min-h-[460px] transition-colors"
             >
               {/* Panel Header */}
-              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-subtle)]">
                 <div className="flex items-center gap-2.5">
                   <span className="relative flex h-2 w-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600"></span>
                   </span>
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
                     Agent Activity
                   </h3>
                 </div>
-                <span className="text-[10px] font-mono text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
                   Gemini 2.5
                 </span>
               </div>
@@ -1991,39 +2538,39 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
               {/* Timeline Stream */}
               <div
                 ref={logContainerRef}
-                className="flex-1 overflow-y-auto px-5 py-4 space-y-0 max-h-[350px] scrollbar-thin scrollbar-thumb-gray-200"
+                className="flex-1 overflow-y-auto px-5 py-4 space-y-0 max-h-[350px] scrollbar-thin scrollbar-thumb-[var(--border-subtle)]"
               >
                 {logs.length === 0 ? (
                   <div className="h-44 flex flex-col items-center justify-center text-center">
-                    <Bot className="w-7 h-7 text-gray-300 mb-2" />
-                    <p className="text-xs font-medium text-gray-400">Agent standing by</p>
-                    <p className="text-[11px] text-gray-400 max-w-xs mt-1">
+                    <Bot className="w-7 h-7 text-[var(--text-muted)] mb-2" />
+                    <p className="text-xs font-medium text-[var(--text-muted)]">Agent standing by</p>
+                    <p className="text-[11px] text-[var(--text-muted)] max-w-xs mt-1">
                       Trigger a payment to start the recovery workflow.
                     </p>
                   </div>
                 ) : (
                   <div className="relative">
                     {/* Vertical timeline line */}
-                    <div className="absolute left-[6px] top-2 bottom-2 w-px bg-gray-100"></div>
+                    <div className="absolute left-[6px] top-2 bottom-2 w-px bg-[var(--border-subtle)]"></div>
                     <div className="space-y-4">
                       {logs.map((item) => (
                         <div key={item.id} className="flex items-start gap-3 relative">
                           {/* Timeline dot */}
-                          <div className={`w-3.5 h-3.5 rounded-full border-2 bg-white mt-0.5 shrink-0 z-10 ${
+                          <div className={`w-3.5 h-3.5 rounded-full border-2 bg-[var(--bg-surface)] mt-0.5 shrink-0 z-10 ${
                             item.type === 'success' ? 'border-emerald-500'
-                            : item.type === 'warn' ? 'border-amber-500'
-                            : item.type === 'ai' ? 'border-blue-500'
-                            : item.type === 'action' ? 'border-violet-500'
-                            : 'border-gray-300'
+                              : item.type === 'warn' ? 'border-amber-500'
+                                : item.type === 'ai' ? 'border-blue-500'
+                                  : item.type === 'action' ? 'border-violet-500'
+                                    : 'border-[var(--border-strong)]'
                           }`}></div>
                           <div className="flex-1 min-w-0 pb-1">
-                            <span className="text-[9px] text-gray-400 font-mono block mb-0.5">{item.time}</span>
+                            <span className="text-[9px] text-[var(--text-muted)] font-mono block mb-0.5">{item.time}</span>
                             <p className={`text-[11px] leading-relaxed ${
-                              item.type === 'success' ? 'text-emerald-700'
-                              : item.type === 'warn' ? 'text-amber-700'
-                              : item.type === 'ai' ? 'text-blue-700'
-                              : item.type === 'action' ? 'text-violet-700'
-                              : 'text-gray-600'
+                              item.type === 'success' ? 'text-emerald-700 dark:text-emerald-300'
+                                : item.type === 'warn' ? 'text-amber-700 dark:text-amber-300'
+                                  : item.type === 'ai' ? 'text-blue-700 dark:text-blue-300'
+                                    : item.type === 'action' ? 'text-violet-700 dark:text-violet-300'
+                                      : 'text-[var(--text-secondary)]'
                             }`}>{item.message}</p>
                           </div>
                         </div>
@@ -2034,49 +2581,64 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
               </div>
 
               {/* System status footer */}
-              <div className="px-5 py-3 border-t border-gray-100 grid grid-cols-2 gap-3">
+              <div className="px-5 py-3 border-t border-[var(--border-subtle)] grid grid-cols-2 gap-3">
                 <div>
-                  <span className="text-[9px] text-gray-400 uppercase tracking-wider block">Safety Gate</span>
-                  <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1 mt-0.5">
+                  <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider block font-mono">Safety Gate</span>
+                  <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
                     <ShieldCheck className="w-3 h-3" />
                     Deterministic
                   </span>
                 </div>
                 <div>
-                  <span className="text-[9px] text-gray-400 uppercase tracking-wider block">Channel</span>
-                  <span className="text-xs font-semibold text-blue-600 flex items-center gap-1 mt-0.5">
-                    <MessageSquare className="w-3 h-3" />
-                    WhatsApp
+                  <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider block font-mono">Active Channel</span>
+                  <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1 mt-0.5 truncate" title={getSelectedStrategyLabel()}>
+                    <MessageSquare className="w-3 h-3 shrink-0" />
+                    {selectedStrategy === 'smart_retry'
+                      ? 'Alternate PSP Route'
+                      : selectedStrategy === 'delayed_retry'
+                        ? 'Cooldown Auto-Queue'
+                        : selectedStrategy === 'update_payment_method'
+                          ? 'Instrument Switcher'
+                          : selectedStrategy === 'human_review'
+                            ? 'Ops Review Desk'
+                            : selectedStrategy === 'stop'
+                              ? 'Guardrail Sentinel'
+                              : 'WhatsApp Verified'}
                   </span>
                 </div>
               </div>
             </div>
 
             {/* Routing Matrix */}
-            <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm space-y-3">
+            <div className="bg-[var(--bg-surface)] rounded-xl p-4 border border-[var(--border-app)] shadow-xs space-y-3 transition-colors">
               <div className="flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-                <h4 className="text-xs font-semibold text-gray-800 uppercase tracking-wider">
+                <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <h4 className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
                   Recovery Routing
                 </h4>
               </div>
               <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between py-1.5 border-b border-gray-50">
-                  <span className="text-gray-600">Temporary Bank Issue</span>
-                  <span className="text-emerald-600 font-semibold">WhatsApp 1-Click</span>
+                <div className="flex items-center justify-between py-1.5 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)]">Temporary Bank Issue</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold font-mono">WhatsApp 1-Click</span>
                 </div>
-                <div className="flex items-center justify-between py-1.5 border-b border-gray-50">
-                  <span className="text-gray-600">Checkout Dropoff</span>
-                  <span className="text-blue-600 font-semibold">Payment Link SMS</span>
+                <div className="flex items-center justify-between py-1.5 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)]">Checkout Dropoff</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-semibold font-mono">Payment Link SMS</span>
                 </div>
                 <div className="flex items-center justify-between py-1.5">
-                  <span className="text-gray-600">Low Probability (&lt;30%)</span>
-                  <span className="text-red-500 font-semibold">Stop — No Fatigue</span>
+                  <span className="text-[var(--text-secondary)]">Low Probability (&lt;30%)</span>
+                  <span className="text-rose-500 dark:text-rose-400 font-semibold font-mono">Stop — No Fatigue</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Layer 2: Adaptive Closed-Loop Recovery Journey Section */}
+      <div id="recovery-journey-section" className="mt-8">
+        <RecoveryJourneyView caseId={recoveryCaseId || 'REC-92831'} />
       </div>
 
       {/* Full-Screen Payment Recovery Modal */}
@@ -2106,6 +2668,14 @@ export const RecoveryControlPage: React.FC<RecoveryControlPageProps> = ({ onNavi
         onClose={() => setSelectedDrillDownStep(null)}
         onNavigate={onNavigate}
         simulationRecovered={simState === 'step7_recovered'}
+        caseId={recoveryCaseId || 'REC-92831'}
+      />
+
+      {/* Layer 3: Why This Action Modal */}
+      <WhyThisActionModal
+        isOpen={whyThisActionModalOpen}
+        onClose={() => setWhyThisActionModalOpen(false)}
+        caseId={recoveryCaseId || 'REC-92831'}
       />
     </div>
   );

@@ -32,9 +32,21 @@ export const DEFAULT_GUARDRAILS: GuardrailConfig = {
 };
 
 let current: GuardrailConfig = { ...DEFAULT_GUARDRAILS };
+let guardrailVersion: number = 1;
 
 export function getGuardrailConfig(): GuardrailConfig {
   return { ...current };
+}
+
+export function getGuardrailVersion(): number {
+  return guardrailVersion;
+}
+
+// Resets guardrails to defaults and increments version
+export function resetGuardrailConfig(): GuardrailConfig {
+  current = { ...DEFAULT_GUARDRAILS };
+  guardrailVersion++;
+  return getGuardrailConfig();
 }
 
 // Validates + clamps an incoming partial patch, then applies it. Unknown or
@@ -68,5 +80,6 @@ export function updateGuardrailConfig(patch: Partial<GuardrailConfig>): Guardrai
   }
 
   current = next;
+  guardrailVersion++;
   return getGuardrailConfig();
 }

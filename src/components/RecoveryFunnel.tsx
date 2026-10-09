@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Sparkles, Filter, CheckCircle2, ChevronRight } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { FunnelStage } from '../types';
 
 interface RecoveryFunnelProps {
@@ -10,26 +10,26 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
   return (
     <div
       id="revenue-recovery-funnel"
-      className="bg-white/80 backdrop-blur-md rounded-2xl p-6 border border-slate-150/80 shadow-[0_2px_12px_-2px_rgba(0,0,0,0.04)]"
+      className="bg-[var(--bg-surface)] rounded-2xl p-6 border border-[var(--border-app)] shadow-xs transition-colors"
     >
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-5 border-b border-slate-100">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-5 border-b border-[var(--border-app)]">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-bold text-slate-900 tracking-tight">
-              1. Revenue Recovery Funnel
+            <h2 className="text-base font-bold text-[var(--text-primary)] tracking-tight">
+              Recovery Pipeline Conversion Funnel
             </h2>
-            <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full border border-indigo-200/60 font-mono">
+            <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded-full fintech-badge-ai">
               Live Pipeline
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-[var(--text-secondary)] mt-0.5">
             Stage-by-stage diagnosis and conversion from failed payment to settled revenue
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 bg-slate-50/80 backdrop-blur-sm px-3.5 py-1.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-          <span>AI Conversion Velocity: <strong>4.2 mins</strong></span>
+        <div className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)] bg-[var(--bg-surface-elevated)] px-3.5 py-1.5 rounded-xl border border-[var(--border-app)] shadow-xs">
+          <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+          <span>AI Conversion Velocity: <strong className="text-[var(--text-primary)]">4.2 mins</strong></span>
         </div>
       </div>
 
@@ -40,45 +40,45 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
           const isLast = idx === stages.length - 1;
 
           let colorStyles = {
-            bg: 'bg-slate-50/70 hover:bg-slate-50',
-            border: 'border-slate-200/70',
-            amountColor: 'text-slate-900',
-            stepBadge: 'bg-slate-200 text-slate-800',
+            bg: 'bg-[var(--bg-surface-elevated)]',
+            border: 'border-[var(--border-app)]',
+            amountColor: 'text-[var(--text-primary)]',
+            stepBadge: 'bg-[var(--bg-surface)] text-[var(--text-secondary)] border border-[var(--border-app)]',
           };
 
           if (stage.status === 'start') {
             colorStyles = {
-              bg: 'bg-amber-50/50 hover:bg-amber-50/80',
-              border: 'border-amber-200/80',
-              amountColor: 'text-amber-900',
+              bg: 'bg-amber-500/5 dark:bg-amber-500/10',
+              border: 'border-amber-500/20 dark:border-amber-500/30',
+              amountColor: 'text-amber-600 dark:text-amber-400',
               stepBadge: 'bg-amber-500 text-white',
             };
           } else if (stage.status === 'diagnosing') {
             colorStyles = {
-              bg: 'bg-blue-50/50 hover:bg-blue-50/80',
-              border: 'border-blue-200/80',
-              amountColor: 'text-blue-900',
+              bg: 'bg-blue-500/5 dark:bg-blue-500/10',
+              border: 'border-blue-500/20 dark:border-blue-500/30',
+              amountColor: 'text-blue-600 dark:text-blue-400',
               stepBadge: 'bg-blue-600 text-white',
             };
           } else if (stage.status === 'opportunity') {
             colorStyles = {
-              bg: 'bg-indigo-50/50 hover:bg-indigo-50/80',
-              border: 'border-indigo-200/80',
-              amountColor: 'text-indigo-900',
+              bg: 'bg-indigo-500/5 dark:bg-indigo-500/10',
+              border: 'border-indigo-500/20 dark:border-indigo-500/30',
+              amountColor: 'text-indigo-600 dark:text-indigo-400',
               stepBadge: 'bg-indigo-600 text-white',
             };
           } else if (stage.status === 'active') {
             colorStyles = {
-              bg: 'bg-purple-50/50 hover:bg-purple-50/80',
-              border: 'border-purple-200/80',
-              amountColor: 'text-purple-900',
+              bg: 'bg-purple-500/5 dark:bg-purple-500/10',
+              border: 'border-purple-500/20 dark:border-purple-500/30',
+              amountColor: 'text-purple-600 dark:text-purple-400',
               stepBadge: 'bg-purple-600 text-white',
             };
           } else if (stage.status === 'success') {
             colorStyles = {
-              bg: 'bg-emerald-50/60 hover:bg-emerald-50/90',
-              border: 'border-emerald-300/80',
-              amountColor: 'text-emerald-900',
+              bg: 'bg-emerald-500/5 dark:bg-emerald-500/10',
+              border: 'border-emerald-500/20 dark:border-emerald-500/30',
+              amountColor: 'text-emerald-600 dark:text-emerald-400',
               stepBadge: 'bg-emerald-600 text-white',
             };
           }
@@ -87,7 +87,7 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
             <div
               key={stage.id}
               id={`funnel-stage-${stage.id}`}
-              className={`rounded-xl p-4 border ${colorStyles.border} ${colorStyles.bg} backdrop-blur-xs transition-all relative flex flex-col justify-between shadow-xs`}
+              className={`rounded-xl p-4 border ${colorStyles.border} ${colorStyles.bg} transition-all relative flex flex-col justify-between shadow-xs hover:border-[var(--border-strong)]`}
             >
               {/* Top Step Counter & Name */}
               <div>
@@ -97,12 +97,12 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
                   >
                     0{idx + 1}
                   </span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] font-mono">
                     {isFirst ? 'Total Inflow' : isLast ? 'Final Yield' : 'Stage ' + (idx + 1)}
                   </span>
                 </div>
 
-                <div className="font-bold text-xs text-slate-800 tracking-tight">
+                <div className="font-bold text-xs text-[var(--text-primary)] tracking-tight">
                   {stage.name}
                 </div>
 
@@ -111,21 +111,21 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
                   {stage.amount}
                 </div>
 
-                <div className="text-xs text-slate-500 font-medium mt-0.5">
+                <div className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
                   {stage.count}
                 </div>
               </div>
 
               {/* Conversion and Drop Metrics */}
-              <div className="mt-4 pt-2.5 border-t border-slate-200/50 flex flex-col gap-1">
+              <div className="mt-4 pt-2.5 border-t border-[var(--border-subtle)] flex flex-col gap-1">
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-slate-500 font-medium">Conversion:</span>
-                  <span className="font-bold text-slate-800 font-mono">
+                  <span className="text-[var(--text-secondary)] font-medium">Conversion:</span>
+                  <span className="font-bold text-[var(--text-primary)] font-mono">
                     {stage.conversionRate}
                   </span>
                 </div>
                 {stage.dropRate && (
-                  <div className="text-[10px] text-slate-500 truncate" title={stage.dropRate}>
+                  <div className="text-[10px] text-[var(--text-muted)] truncate" title={stage.dropRate}>
                     {stage.dropRate}
                   </div>
                 )}
@@ -136,15 +136,15 @@ export const RecoveryFunnel: React.FC<RecoveryFunnelProps> = ({ stages }) => {
       </div>
 
       {/* Pipeline Summary Bar */}
-      <div className="mt-4 p-3.5 bg-slate-50/70 backdrop-blur-sm rounded-xl border border-slate-200/70 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div className="mt-4 p-3.5 bg-[var(--bg-surface-elevated)] rounded-xl border border-[var(--border-app)] flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-xs" />
-          <span className="text-slate-700 font-medium">
-            <strong>₹3.82L recovered</strong> out of <strong>₹6.42L recoverable</strong> failed volume today
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-2xs" />
+          <span className="text-[var(--text-secondary)] font-medium">
+            <strong className="text-[var(--text-primary)]">₹3.82L recovered</strong> out of <strong className="text-[var(--text-primary)]">₹6.42L recoverable</strong> failed volume today
           </span>
         </div>
-        <div className="text-slate-500 text-[11px]">
-          Target Recovery: <span className="font-bold text-slate-800 font-mono">₹4.50L / Day</span>
+        <div className="text-[var(--text-muted)] text-[11px]">
+          Target Recovery: <span className="font-bold text-[var(--text-primary)] font-mono">₹4.50L / Day</span>
         </div>
       </div>
     </div>

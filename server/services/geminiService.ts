@@ -1,10 +1,11 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { RecoveryStrategyId, normalizeStrategyId } from './strategyRegistry';
 
 export interface GeminiDiagnosisResult {
   rootCause: string;
   confidence: number;
   recoveryProbability: number;
-  recommendedAction: 'whatsapp_recovery' | 'delayed_retry' | 'payment_link' | 'stop' | 'human_approval';
+  recommendedAction: RecoveryStrategyId;
   expectedRecovery: number;
   reasoning: string;
   evidence: string[];
@@ -35,46 +36,84 @@ function getFallbackDiagnosis(
   
   let rootCause = 'Unknown Payment Failure';
   let recoveryProbability = 0.5;
-  let recommendedAction: GeminiDiagnosisResult['recommendedAction'] = 'payment_link';
+  let recommendedAction: RecoveryStrategyId = 'smart_retry';
   let reasoning = 'Default heuristic evaluation applied due to standard code match.';
   let evidence: string[] = [`Transaction value: ₹${amount.toLocaleString('en-IN')}`];
 
-  if (code.includes('TIMEOUT') || code.includes('504') || code.includes('DEGRADED')) {
+  if (code.includes('TIMEOUT') || code.includes('504')) {
     rootCause = 'Temporary Bank Degradation';
     recoveryProbability = 0.85;
-    recommendedAction = 'whatsapp_recovery';
-    reasoning = 'The bank gateway appears temporarily degraded. Latency spike detected during authentication handshake.';
+    recommendedAction = 'smart_retry';
+    reasoning = 'The bank gateway appears temporarily degraded. Latency spike detected during authentication handshake; zero-wait retry via alternate acquiring route offers highest conversion.';
     evidence.push(
       'Bank success rate dropped below 70%',
       'OTP/3DS gateway timeout detected',
       `Customer has attempted only ${retryCount} previous retries`
     );
-  } else if (code.includes('BALANCE') || code.includes('ERR_INSUFFICIENT_FUNDS')) {
-    rootCause = 'Insufficient Funds';
-    recoveryProbability = 0.25;
-    recommendedAction = 'stop';
-    reasoning = 'Soft decline due to lack of funds. Immediate retry is blocked to prevent transaction fee waste.';
+  } else if (code.includes('GATEWAY_ERROR') || code.includes('TEMPORARY_DEGRADATION')) {
+    rootCause = 'Gateway Node Degradation';
+    recoveryProbability = 0.80;
+    recommendedAction = 'smart_retry';
+    reasoning = 'Transient gateway error encountered. Secondary acquirer routing recommended.';
     evidence.push(
-      'Issuer returned INSUFFICIENT_FUNDS error code',
-      'Transaction declined on primary bank account'
+      'Gateway returned upstream HTTP 502/503 error',
+      'Secondary acquiring route available'
+    );
+  } else if (code.includes('DOWNTIME') || code.includes('MAINTENANCE')) {
+    rootCause = 'Scheduled Bank Maintenance Window';
+    recoveryProbability = 0.75;
+    recommendedAction = 'delayed_retry';
+    reasoning = 'Issuer node under maintenance window. Queuing delayed retry after maintenance window clears.';
+    evidence.push(
+      'Bank maintenance schedule active',
+      'Immediate retries suspended to prevent error burn'
+    );
+  } else if (
+    code.includes('BALANCE') ||
+    code.includes('ERR_INSUFFICIENT_FUNDS') ||
+    code.includes('INSUFFICIENT_FUNDS') ||
+    code.includes('CARD_EXPIRED') ||
+    code.includes('EXPIRED_PAYMENT_METHOD')
+  ) {
+    rootCause = 'Payment Instrument Soft Decline';
+    recoveryProbability = 0.35;
+    recommendedAction = 'payment_method_update';
+    reasoning = 'Soft decline due to instrument funds or expiration. Customer payment method switch is required.';
+    evidence.push(
+      `Issuer returned ${failureCode} error code`,
+      'Primary payment instrument cannot be debited directly'
     );
   } else if (code.includes('LIMIT') || code.includes('EXCEEDED')) {
     rootCause = 'Mandate Limit Exceeded';
     recoveryProbability = 0.60;
-    recommendedAction = 'human_approval';
+    recommendedAction = 'human_review';
     reasoning = 'Account or daily limit has been exceeded. Requires operator approval to divide or schedule invoice.';
     evidence.push(
       'Issuer returned limit constraint error',
       'High order value compared to card profile'
     );
-  } else if (code.includes('FRAUD') || code.includes('SUSPECTED')) {
+  } else if (code.includes('FRAUD') || code.includes('SUSPECTED') || code.includes('BLOCKED')) {
     rootCause = 'Blocked by Risk Sentinel';
-    recoveryProbability = 0.10;
+    recoveryProbability = 0.05;
     recommendedAction = 'stop';
     reasoning = 'High risk velocity triggers indicating duplicate attempts from multiple locations.';
     evidence.push(
       'Card flagged by risk engine',
       'Multiple declined cards from same fingerprint'
+    );
+  } else if (
+    code.includes('DROPPED') ||
+    code.includes('USER_CANCELLED') ||
+    code.includes('AUTH_EXPIRED') ||
+    code.includes('AUTH_FAILED')
+  ) {
+    rootCause = 'Customer Checkout Abandonment';
+    recoveryProbability = 0.75;
+    recommendedAction = 'whatsapp_payment_link';
+    reasoning = 'Customer abandoned checkout or session expired. Direct 1-click WhatsApp recovery link offers highest re-engagement.';
+    evidence.push(
+      'Customer dropped during 3DS OTP step',
+      'High re-engagement intent via instant messaging'
     );
   }
 
@@ -115,7 +154,7 @@ export async function diagnosePaymentFailureWithGemini(
     1. The root cause of failure.
     2. A confidence score between 0.0 and 1.0.
     3. A recovery success probability between 0.0 and 1.0.
-    4. Recommended recovery strategy. Must be one of: "whatsapp_recovery", "delayed_retry", "payment_link", "stop", "human_approval".
+    4. Recommended recovery strategy. Must be exactly one of: "smart_retry", "whatsapp_payment_link", "delayed_retry", "payment_method_update", "human_review", "stop".
     5. Reasoning why you recommended this.
     6. Bulleted key telemetry evidence (minimum 2 items).
   `;
@@ -134,7 +173,14 @@ export async function diagnosePaymentFailureWithGemini(
             recoveryProbability: { type: Type.NUMBER },
             recommendedAction: {
               type: Type.STRING,
-              enum: ['whatsapp_recovery', 'delayed_retry', 'payment_link', 'stop', 'human_approval']
+              enum: [
+                'smart_retry',
+                'whatsapp_payment_link',
+                'delayed_retry',
+                'payment_method_update',
+                'human_review',
+                'stop'
+              ]
             },
             reasoning: { type: Type.STRING },
             evidence: {
@@ -161,15 +207,16 @@ export async function diagnosePaymentFailureWithGemini(
 
     const parsed = JSON.parse(text);
     
-    // Add expectedRecovery calculation
+    // Add expectedRecovery calculation and normalize action
     const recoveryProbability = parsed.recoveryProbability || 0.5;
     const expectedRecovery = Math.round(amount * recoveryProbability);
+    const normalizedAction = normalizeStrategyId(parsed.recommendedAction);
 
     return {
       rootCause: parsed.rootCause || 'Temporary Bank Degradation',
       confidence: parsed.confidence || 0.8,
       recoveryProbability: recoveryProbability,
-      recommendedAction: parsed.recommendedAction || 'payment_link',
+      recommendedAction: normalizedAction,
       expectedRecovery,
       reasoning: parsed.reasoning || 'Default Gemini output processing.',
       evidence: parsed.evidence || []
@@ -180,3 +227,4 @@ export async function diagnosePaymentFailureWithGemini(
     return getFallbackDiagnosis(amount, failureCode, paymentMethod, retryCount);
   }
 }
+

@@ -4,7 +4,7 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     title: 'COMMAND CENTER',
     items: [
-      { id: 'merchant-overview', label: 'Merchant Overview', badge: 'Live', badgeType: 'green' },
+      { id: 'merchant-overview', label: 'Merchant Overview', badge: 'Batch Eval', badgeType: 'purple' },
     ],
   },
   {

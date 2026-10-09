@@ -24,6 +24,7 @@ export const db = new sqlite.Database(DB_FILE, (err) => {
     console.log('Connected to SQLite database at:', DB_FILE);
   }
 });
+db.configure('busyTimeout', 15000);
 
 // Promise-based helpers for database queries
 export const dbQuery = {
@@ -155,13 +156,128 @@ export async function initDb() {
     )
   `);
 
-  // Create webhooks_received table for idempotency check
+  // Create webhooks_received table for duplicate webhook protection
   await dbQuery.exec(`
     CREATE TABLE IF NOT EXISTS webhooks_received (
       event_id TEXT PRIMARY KEY,
+      case_id TEXT,
       processed_at TEXT
+    )
+  `);
+
+  try {
+    await dbQuery.run(`ALTER TABLE webhooks_received ADD COLUMN case_id TEXT`);
+  } catch (_e) {
+    // Column already exists
+  }
+
+  // Create idempotency_records table for Layer 5 Financial Safety
+  await dbQuery.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_records (
+      key TEXT PRIMARY KEY,
+      case_id TEXT,
+      action_type TEXT,
+      status TEXT,
+      request_payload TEXT,
+      response_payload TEXT,
+      execution_mode TEXT,
+      created_at TEXT,
+      completed_at TEXT
+    )
+  `);
+
+  // Create evaluation_runs table for batch evaluation engine
+  await dbQuery.exec(`
+    CREATE TABLE IF NOT EXISTS evaluation_runs (
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
+      seed INTEGER,
+      batch_size INTEGER,
+      guardrails_snapshot TEXT,
+      baseline_metrics TEXT,
+      reviveai_metrics TEXT,
+      lift_metrics TEXT,
+      summary_notes TEXT
+    )
+  `);
+
+  // Create evaluation_cases table for batch evaluation cases
+  await dbQuery.exec(`
+    CREATE TABLE IF NOT EXISTS evaluation_cases (
+      id TEXT PRIMARY KEY,
+      run_id TEXT,
+      payment_id TEXT,
+      customer_name TEXT,
+      customer_email TEXT,
+      customer_tier TEXT,
+      amount INTEGER,
+      failure_code TEXT,
+      failure_type TEXT,
+      retry_count INTEGER,
+      ground_truth_prob REAL,
+      reviveai_prob REAL,
+      reviveai_action TEXT,
+      reviveai_policy_status TEXT,
+      reviveai_is_approved INTEGER,
+      reviveai_is_human_review INTEGER,
+      reviveai_is_stopped INTEGER,
+      reviveai_intervened INTEGER,
+      reviveai_recovered INTEGER,
+      reviveai_recovered_revenue INTEGER,
+      baseline_intervened INTEGER,
+      baseline_recovered INTEGER,
+      baseline_recovered_revenue INTEGER,
+      is_synthetic INTEGER DEFAULT 1,
+      created_at TEXT,
+      FOREIGN KEY (run_id) REFERENCES evaluation_runs (id)
+    )
+  `);
+
+  // Create recovery_journey_steps table for Layer 2 adaptive closed-loop journey
+  await dbQuery.exec(`
+    CREATE TABLE IF NOT EXISTS recovery_journey_steps (
+      id TEXT PRIMARY KEY,
+      case_id TEXT,
+      attempt_number INTEGER,
+      strategy_id TEXT,
+      strategy_name TEXT,
+      reasoning TEXT,
+      policy_approved INTEGER,
+      policy_checks TEXT,
+      policy_status_text TEXT,
+      action_status TEXT,
+      action_payload TEXT,
+      outcome TEXT,
+      failure_reason TEXT,
+      next_action TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      FOREIGN KEY (case_id) REFERENCES recovery_cases (id)
+    )
+  `);
+
+  // Create ai_strategy_intelligence table for Layer 3 Recovery Strategy Intelligence
+  await dbQuery.exec(`
+    CREATE TABLE IF NOT EXISTS ai_strategy_intelligence (
+      id TEXT PRIMARY KEY,
+      case_id TEXT,
+      diagnosis TEXT,
+      confidence REAL,
+      recovery_probability REAL,
+      recommended_strategy TEXT,
+      reasoning TEXT,
+      evidence TEXT,
+      alternative_strategy TEXT,
+      why_not_alternative TEXT,
+      risk_flags TEXT,
+      validation_passed INTEGER,
+      is_fallback INTEGER,
+      raw_output TEXT,
+      created_at TEXT,
+      FOREIGN KEY (case_id) REFERENCES recovery_cases (id)
     )
   `);
 
   console.log('Database schema initialization completed.');
 }
+

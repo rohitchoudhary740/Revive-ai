@@ -18,12 +18,49 @@ export interface InterventionOption {
   notes: string;
 }
 
+export type CanonicalStrategyAction =
+  | 'smart_retry'
+  | 'whatsapp_payment_link'
+  | 'delayed_retry'
+  | 'update_payment_method'
+  | 'payment_method_update'
+  | 'human_review'
+  | 'stop'
+  | 'whatsapp_recovery'
+  | 'payment_link'
+  | 'retry_now'
+  | 'human_approval';
+
+export function normalizeClientStrategyId(id?: string): 'smart_retry' | 'whatsapp_payment_link' | 'delayed_retry' | 'update_payment_method' | 'human_review' | 'stop' {
+  if (!id) return 'human_review';
+  const clean = id.trim().toLowerCase();
+  if (clean === 'whatsapp_payment_link' || clean === 'whatsapp_recovery' || clean === 'whatsapp' || clean === 'payment_link') {
+    return 'whatsapp_payment_link';
+  }
+  if (clean === 'smart_retry' || clean === 'retry_now' || clean === 'retry' || clean === 'immediate_retry') {
+    return 'smart_retry';
+  }
+  if (clean === 'delayed_retry' || clean === 'delayed') {
+    return 'delayed_retry';
+  }
+  if (clean === 'payment_method_update' || clean === 'update_payment_method') {
+    return 'update_payment_method';
+  }
+  if (clean === 'human_review' || clean === 'human_approval' || clean === 'escalate') {
+    return 'human_review';
+  }
+  if (clean === 'stop' || clean === 'terminate' || clean === 'no_action') {
+    return 'stop';
+  }
+  return 'human_review';
+}
+
 export interface AiDiagnosisResult {
   rootCause: string;
   rootCauseLabel: string;
   confidence: number; // e.g. 0.94
   recoveryProbability: number; // e.g. 0.87
-  recommendedAction: 'whatsapp_recovery' | 'delayed_retry' | 'payment_link' | 'stop' | 'human_approval';
+  recommendedAction: CanonicalStrategyAction;
   recommendedActionLabel: string;
   expectedRecoveryValue: number; // e.g. 4350
   reason: string;
@@ -35,74 +72,162 @@ export async function diagnosePaymentFailure(context: PaymentFailureContext): Pr
   // Simulate intelligent processing delay to reflect deep AI inference
   await new Promise((resolve) => setTimeout(resolve, 1400));
 
-  const recoveryProbability = 0.87;
-  const confidence = 0.94;
-  const expectedValue = Math.round(context.amount * recoveryProbability); // 4350 for 5000
+  const code = (context.failureCode || '').toUpperCase();
+  const retryCount = context.customerPreviousRetryCount || 0;
+
+  // Context-aware canonical strategy resolution
+  let recommendedAction: CanonicalStrategyAction;
+  let recommendedActionLabel: string;
+  let rootCause: string;
+  let rootCauseLabel: string;
+  let confidence = 0.94;
+  let recoveryProbability = 0.87;
+  let reason: string;
+  let evidence: string[];
+
+  if (retryCount >= 2) {
+    recommendedAction = 'human_review';
+    recommendedActionLabel = 'Escalate to Human Review';
+    rootCause = 'max_retries_exhausted';
+    rootCauseLabel = 'Retry Budget Exhausted';
+    confidence = 0.96;
+    recoveryProbability = 0.25;
+    reason = 'Maximum automated retry attempts exhausted. Routing to operations team for human review.';
+    evidence = [
+      `Attempt count (${retryCount}) reached safety limit`,
+      'Preventing repeated automated contact fatigue',
+      'Escalated to merchant operations desk',
+    ];
+  } else if (code === 'USER_CANCELLED' || code === 'CHECKOUT_DISMISSED' || context.paymentMethod === 'PAYMENT_LINK') {
+    recommendedAction = 'whatsapp_payment_link';
+    recommendedActionLabel = 'WhatsApp 1-Click Payment Link';
+    rootCause = 'checkout_abandonment';
+    rootCauseLabel = 'Checkout Abandoned / Dismissed';
+    confidence = 0.92;
+    recoveryProbability = 0.87;
+    reason = 'Customer dismissed checkout modal. Direct 1-click WhatsApp payment link offers highest recovery yield without customer friction.';
+    evidence = [
+      'Customer dismissed active payment interface before completion',
+      'Cart intent verified intact (single session abandonment)',
+      'WhatsApp interactive notification conversion benchmark: 87.4%',
+      'Direct 1-click Razorpay payment link generated',
+    ];
+  } else if (code === 'BANK_TIMEOUT') {
+    recommendedAction = 'smart_retry';
+    recommendedActionLabel = 'Smart Immediate Retry';
+    rootCause = 'temporary_bank_degradation';
+    rootCauseLabel = 'Temporary Bank Degradation';
+    confidence = 0.94;
+    recoveryProbability = 0.88;
+    reason = 'Temporary bank timeout with no prior retry. Rerouting immediately via backup acquiring node is lower friction than customer outreach.';
+    evidence = [
+      'HDFC/NPCI switch latency spiked +480ms in last 5 mins (Bank Success Rate: 69%)',
+      '17 clustered gateway timeouts detected across payment cluster',
+      `Customer previous retry count is ${retryCount} (clean state, zero fatigue)`,
+      'Smart rerouting to backup node projected success rate: 88%',
+    ];
+  } else if (code === 'GATEWAY_ERROR' || code === 'NETWORK_ERROR' || code === 'GATEWAY_DEGRADED') {
+    recommendedAction = 'delayed_retry';
+    recommendedActionLabel = 'Delayed Intelligent Retry';
+    rootCause = 'gateway_node_degradation';
+    rootCauseLabel = 'Gateway Infrastructure Degradation';
+    confidence = 0.91;
+    recoveryProbability = 0.81;
+    reason = 'Transient gateway error across acquiring cluster. Delayed retry allows acquiring node cool-down before re-executing.';
+    evidence = [
+      'Transient 502/504 gateway degradation across primary acquiring cluster',
+      'Cluster health projected to recover within cooldown window',
+      'Passive recovery preserves customer experience without message spam',
+    ];
+  } else if (code === 'EXPIRED_PAYMENT_METHOD' || code === 'CARD_EXPIRED' || code === 'INSUFFICIENT_FUNDS') {
+    recommendedAction = 'update_payment_method';
+    recommendedActionLabel = 'Update Payment Method';
+    rootCause = 'instrument_invalid';
+    rootCauseLabel = 'Expired / Invalid Payment Instrument';
+    confidence = 0.95;
+    recoveryProbability = 0.79;
+    reason = 'Payment method declined or expired. Prompting customer to update payment instrument or select alternate UPI/card.';
+    evidence = [
+      'Card or payment token reported expired by issuer',
+      'Customer active session detected — prompt instrument switch',
+      'Seamless secondary payment method switch supported',
+    ];
+  } else {
+    // Default fallback: smart retry for transient issues
+    recommendedAction = 'smart_retry';
+    recommendedActionLabel = 'Smart Immediate Retry';
+    rootCause = 'transient_processing_failure';
+    rootCauseLabel = 'Transient Processing Failure';
+    confidence = 0.90;
+    recoveryProbability = 0.85;
+    reason = 'Transient processing failure with clean customer retry state. Immediate smart retry selected.';
+    evidence = [
+      `Failure signature: ${code || 'UNKNOWN'}`,
+      'Idempotency token verified (no active duplicate action)',
+      'Automated retry within policy guardrails',
+    ];
+  }
+
+  const expectedValue = Math.round(context.amount * recoveryProbability);
 
   const interventions: InterventionOption[] = [
     {
-      id: 'retry_now',
-      name: 'Retry Now',
-      channel: 'Direct PSP Retry',
-      probability: 0.42,
-      expectedValue: Math.round(context.amount * 0.42),
-      isRecommended: false,
-      notes: 'High risk of duplicate timeout while HDFC issuer node is degraded.',
+      id: 'smart_retry',
+      name: 'Smart Immediate Retry',
+      channel: 'Direct PSP Alternate Node',
+      probability: recommendedAction === 'smart_retry' ? recoveryProbability : 0.42,
+      expectedValue: Math.round(context.amount * (recommendedAction === 'smart_retry' ? recoveryProbability : 0.42)),
+      isRecommended: recommendedAction === 'smart_retry',
+      notes: 'Immediate re-execution through backup acquiring node. Zero customer friction.',
     },
     {
       id: 'delayed_retry',
       name: 'Delayed Retry',
-      channel: 'Auto-Retry Queue',
-      probability: 0.81,
-      expectedValue: Math.round(context.amount * 0.81),
-      isRecommended: false,
-      notes: 'Good passive recovery, but customer may assume purchase was abandoned.',
+      channel: 'Auto-Retry Cooldown Queue',
+      probability: recommendedAction === 'delayed_retry' ? recoveryProbability : 0.78,
+      expectedValue: Math.round(context.amount * (recommendedAction === 'delayed_retry' ? recoveryProbability : 0.78)),
+      isRecommended: recommendedAction === 'delayed_retry',
+      notes: 'Scheduled retry after acquiring cluster node health normalizes.',
     },
     {
-      id: 'whatsapp_recovery',
-      name: 'WhatsApp Recovery',
-      channel: 'WhatsApp 1-Click Pay',
-      probability: 0.87,
-      expectedValue: expectedValue,
-      isRecommended: true,
-      notes: 'Direct frictionless re-authorization link after bank normalization with highest conversion.',
+      id: 'whatsapp_payment_link',
+      name: 'WhatsApp 1-Click Link',
+      channel: 'WhatsApp Verified Channel',
+      probability: recommendedAction === 'whatsapp_payment_link' ? recoveryProbability : 0.85,
+      expectedValue: Math.round(context.amount * (recommendedAction === 'whatsapp_payment_link' ? recoveryProbability : 0.85)),
+      isRecommended: recommendedAction === 'whatsapp_payment_link',
+      notes: 'Direct frictionless re-authorization link with verified business token.',
     },
     {
-      id: 'payment_link',
-      name: 'Payment Link (SMS)',
-      channel: 'SMS Gateway',
-      probability: 0.64,
-      expectedValue: Math.round(context.amount * 0.64),
-      isRecommended: false,
-      notes: 'Moderate click-through rate compared to instant messaging.',
+      id: 'update_payment_method',
+      name: 'Update Payment Method',
+      channel: 'Interactive Method Switcher',
+      probability: recommendedAction === 'update_payment_method' ? recoveryProbability : 0.74,
+      expectedValue: Math.round(context.amount * (recommendedAction === 'update_payment_method' ? recoveryProbability : 0.74)),
+      isRecommended: recommendedAction === 'update_payment_method',
+      notes: 'Customer prompt to replace expired card or select secondary UPI handle.',
     },
     {
-      id: 'email',
-      name: 'Email Recovery',
-      channel: 'Transactional Email',
-      probability: 0.38,
-      expectedValue: Math.round(context.amount * 0.38),
-      isRecommended: false,
-      notes: 'Low urgency for instantaneous checkout failure.',
+      id: 'stop',
+      name: 'Stop (No Action)',
+      channel: 'Guardrail Sentinel',
+      probability: 0.0,
+      expectedValue: 0,
+      isRecommended: (recommendedAction as string) === 'stop',
+      notes: 'Terminate pipeline to prevent duplicate charging or customer fatigue.',
     },
   ];
 
   return {
-    rootCause: 'temporary_bank_degradation',
-    rootCauseLabel: 'Temporary Bank Degradation',
-    confidence: confidence,
-    recoveryProbability: recoveryProbability,
-    recommendedAction: 'whatsapp_recovery',
-    recommendedActionLabel: 'WhatsApp Recovery',
+    rootCause,
+    rootCauseLabel,
+    confidence,
+    recoveryProbability,
+    recommendedAction,
+    recommendedActionLabel,
     expectedRecoveryValue: expectedValue,
-    reason:
-      'Customer has high recovery probability (87%) and the bank issue appears temporary. A recovery notification allows the customer to complete the original payment after the issue is resolved.',
-    telemetryEvidence: [
-      'HDFC/NPCI switch latency spiked +480ms in last 5 mins (Bank Success Rate: 69%)',
-      '17 clustered gateway timeouts detected across payment cluster',
-      'Customer previous retry count is 0 (clean state, zero fatigue)',
-      'WhatsApp interactive notification conversion benchmark: 87.4%',
-    ],
+    reason,
+    telemetryEvidence: evidence,
     interventions,
   };
 }

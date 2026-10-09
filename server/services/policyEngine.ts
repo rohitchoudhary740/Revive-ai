@@ -110,7 +110,7 @@ export function evaluateDeterministicSafetyRules(
 
   // 2. Human Approval Required Conditions (Warnings / Gatekeepers)
   const isHighValue = amount > maxAutoRecoveryAmount;
-  if ((isHighValue && highValueRequiresApproval) || diagnosis.confidence < 0.80 || diagnosis.recommendedAction === 'human_approval') {
+  if ((isHighValue && highValueRequiresApproval) || diagnosis.confidence < 0.80 || diagnosis.recommendedAction === 'human_review') {
     const reason = isHighValue && highValueRequiresApproval
       ? `transaction amount (₹${amount.toLocaleString('en-IN')}) exceeds auto-limit guardrail (${limitLabel})`
       : diagnosis.confidence < 0.80
@@ -154,3 +154,29 @@ export function evaluateDeterministicSafetyRules(
     checks,
   };
 }
+
+export const PolicyEngine = {
+  evaluate: evaluateDeterministicSafetyRules,
+  evaluateDeterministicSafetyRules,
+  evaluateCase: (
+    caseData: { amount: number; customerPreviousRetryCount?: number; retryCount?: number; isDuplicate?: boolean; isDuplicateActive?: boolean; customerContactCount?: number },
+    diagnosis: { confidence: number; recoveryProbability: number; recommendedAction?: string },
+    config?: GuardrailConfig
+  ): PolicyEvaluationResult => {
+    return evaluateDeterministicSafetyRules(
+      caseData.amount,
+      caseData.customerPreviousRetryCount ?? caseData.retryCount ?? 0,
+      {
+        rootCause: 'Deterministic Policy Evaluation',
+        confidence: diagnosis.confidence,
+        recoveryProbability: diagnosis.recoveryProbability,
+        recommendedAction: (diagnosis.recommendedAction as any) || 'smart_retry',
+        expectedRecovery: Math.round(caseData.amount * diagnosis.recoveryProbability),
+        reasoning: 'Evaluation check',
+        evidence: []
+      },
+      caseData.isDuplicateActive ?? caseData.isDuplicate ?? false,
+      config
+    );
+  }
+};
